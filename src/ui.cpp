@@ -497,6 +497,11 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
 static volatile int8_t pending_action = -1;
 static void do_action(uint8_t idx);
 
+// Decaying peak-hold of each output level, updated at 1 kHz (see ui_service).
+// Full-scale fall time: DAC_MAX_MV / METER_DECAY_MV_MS ~= 625 ms.
+#define METER_DECAY_MV_MS 16
+static uint16_t meter_pk[NUM_OUTPUTS] = { 0 };
+
 void ui_run_pending() {
   if (pending_action < 0) return;
   int8_t a = pending_action;
@@ -634,6 +639,18 @@ static void select_rel(int8_t d) {
 void ui_service() {
   ui_ticks++;
 
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
+    // Peak-hold with linear decay: follows the signal instantly on the way up,
+    // falls at a fixed mV/ms so the bar visibly pulsates at any tempo instead
+    // of latching to the per-frame maximum.
+    int32_t v = channels[i].out_mv;
+    int32_t pk = meter_pk[i];
+    if (v >= pk) pk = v;
+    else if (pk - v > METER_DECAY_MV_MS) pk -= METER_DECAY_MV_MS;
+    else pk = v;
+    meter_pk[i] = (uint16_t)pk;
+  }
+
   enc_l.poll(PIN_ENC_A, PIN_ENC_B);
   enc_r.poll(PIN_ENC_R_A, PIN_ENC_R_B);
   btn_enc_sw.poll(PIN_ENC_SW);
@@ -726,12 +743,11 @@ void ui_draw() {
     if (app_menu) {
       gfx->printf("PICK APP OUT%d", ch + 1);
     } else {
-      gfx->printf("OUT%d %s", ch + 1, MODE_NAMES[gm]);
-      // Group name, right-aligned to the LEFT edge of the meter column so it
-      // never draws over the bars.
+      // Single header label: the current group name, which defaults to the mode
+      // name on shape pages. Showing both would collide for long names like
+      // "woggle" (mode text runs to x=66, group text starts near x=51).
       const char *grp = app_param_group(gm, param_idx, channels[ch].p.step_len);
-      gfx->setCursor(METR_X - 6 * (int8_t)strlen(grp) - 1, 0);
-      gfx->printf("%s", grp);
+      gfx->printf("OUT%d %s", ch + 1, grp);
     }
   }
 
@@ -816,27 +832,41 @@ void ui_draw() {
   const int16_t box_top = 8, box_btm = 63;       // walls: top row 8, bottom row 63 (full height)
   const int16_t cell_w = bw - 2;                 // drawn width (1px gutter each side)
   const int16_t gate_h = 3;                      // gate band height, at the interior base
-  const int16_t gate_top = box_btm - gate_h;     // gate band rows [gate_top, box_btm-1]
-  const int16_t lvl_base = gate_top;             // level rises upward from here
+  const int16_t lvl_base = box_btm;              // level rises from the box floor
   const int16_t lvl_top = box_top + 1;           // level ceiling (interior top)
   const int16_t lvl_h = lvl_base - lvl_top;      // fillable rows for the level
+  static int32_t meter_mv[NUM_OUTPUTS] = { 0 };  // smoothed display level
+  static int32_t meter_h[NUM_OUTPUTS] = { 0 };   // last drawn pixel height
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     int16_t x = mx + i * bw + 1;
     gfx->drawRect(x, box_top, cell_w, box_btm - box_top + 1, PNC_WHITE);
     int32_t lo = channels[i].p.cv_min, hi = channels[i].p.cv_max;
     int32_t mv = (int32_t)channels[i].out_mv;
     int32_t span = hi - lo;
+    // Feed the smoother the 1 kHz decaying peak-hold: rises with the signal,
+    // then coasts down, so the bar pulsates cleanly at any tempo.
+    int32_t target = meter_pk[i] > (uint16_t)mv ? meter_pk[i] : mv;
+    // Fast attack, slow release, so LFO/woggle output reads as a level instead
+    // of strobing at the signal rate.
+    int32_t d = target - meter_mv[i];
+    meter_mv[i] += d > 0 ? (d + 1) / 2 : (d - 7) / 8;
     int32_t h = 0;
     if (span > 0 && lvl_h > 0) {
-      h = (mv - lo) * lvl_h / span;
+      h = (meter_mv[i] - lo) * lvl_h / span;
       if (h < 0) h = 0;
       if (h > lvl_h) h = lvl_h;
     }
-    // level occupies rows [lvl_base-h, lvl_base-1]; never enters the gate band.
-    if (h) gfx->fillRect(x + 1, lvl_base - h, cell_w - 2, h, PNC_WHITE);
-    // gate indicator: a solid band at the base, inside the box.
-    if (channels[i].gate_state)
-      gfx->fillRect(x + 1, gate_top, cell_w - 2, gate_h, PNC_WHITE);
+    // 1px deadband: tiny level wobbles don't redraw the bar.
+    if (h > meter_h[i] + 1 || h < meter_h[i] - 1) meter_h[i] = h;
+    h = meter_h[i];
+    // level occupies rows [box_btm-h, box_btm-1]; starts flush at the box floor.
+    if (h) gfx->fillRect(x + 1, box_btm - h, cell_w - 2, h, PNC_WHITE);
+    // gate indicator: solid band at the base, with a 1px black separator above
+    // it so it stays distinct when the level fill runs through the same rows.
+    if (channels[i].gate_state) {
+      gfx->fillRect(x + 1, box_btm - gate_h, cell_w - 2, gate_h, PNC_WHITE);
+      gfx->drawLine(x + 1, box_btm - gate_h - 1, x + cell_w - 2, box_btm - gate_h - 1, PNC_BLACK);
+    }
   }
   oled_flush();
 }
