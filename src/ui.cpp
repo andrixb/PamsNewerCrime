@@ -3,9 +3,8 @@
 #include "storage.h"
 #include <Adafruit_GFX.h>
 
-#if IS_O_C
 // ---------------------------------------------------------------------------
-// Genuine O_C panel: SH1106 128x64 on SPI (shared bus with the DAC8565).
+// O_C panel: SH1106 128x64 on SPI (shared bus with the DAC8565).
 // Own framebuffer + per-page diff flush; noInterrupts() around each page so
 // the 1 kHz DAC writes can never interleave on the shared SPI lines.
 // Column addressing matches Phazerville: pages start at column 2 (SH1106
@@ -79,22 +78,8 @@ private:
 };
 static PncSpiOled oled_spi;
 static Adafruit_GFX *gfx = &oled_spi;
-static uint8_t display_addr = 0;
 #define PNC_BLACK 0
 #define PNC_WHITE 1
-#else
-#include <Wire.h>
-#include <Adafruit_SSD1306.h>
-#include <Adafruit_SH110X.h>
-static Adafruit_SSD1306 oled_ssd(128, 64, &Wire, DISPLAY_RESET);
-static Adafruit_SH110X  oled_sh(128, 64, &Wire, DISPLAY_RESET);
-static Adafruit_GFX *gfx = nullptr;
-static uint8_t display_addr = 0;
-// 0 = SSD1306, 2 = SH1106
-static uint8_t oled_mode = 0;
-#define PNC_BLACK 0
-#define PNC_WHITE 1
-#endif
 static bool display_ok = false;
 
 extern Channel channels[NUM_OUTPUTS];
@@ -104,14 +89,10 @@ static const char *WAVE_NAMES[] = { "sin", "tri", "saw", "sqr" };
 static const char *CVP_NAMES[]  = { "--", "range", "width", "phase", "delay", "prob", "ratio" };
 static const char *SCALE_NAMES[] = { "chro", "major", "minor", "dorian", "phryg", "lydian", "mixolyd", "harm", "penta", "pentmn", "blues", "whole" };
 static const char *LOGIC_NAMES[] = { "--", "and", "or", "xor", "nand", "nor" };
-static const char *SRC_NAMES[3] = { "int", "ext", "midi" };
-#define SRC_COUNT (HAS_MIDI_IN ? 3 : 2)
+static const char *SRC_NAMES[2] = { "int", "ext" };
+#define SRC_COUNT 2
 
-static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A", "load bank B", "defaults"
-#if !IS_O_C
-  , "oled: ssd1306", "oled: sh1106"
-#endif
-};
+static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A", "load bank B", "defaults" };
 #define SYS_ACTION_COUNT (sizeof(SYS_ACTIONS) / sizeof(SYS_ACTIONS[0]))
 
 #define P_RATIO 0
@@ -151,32 +132,48 @@ static uint8_t page = 0;
 static uint8_t param_idx = 0;
 
 // ---------------------------------------------------------------------------
-// Encoder + button decoding, copied from the O_C / Phazerville firmware
-// (UI::Encoder<>, UI::Button<> in src/UI/ui_encoder.h / ui_button.h).
+// Encoder + button decoding. Buttons use the Phazerville 7-bit rolling shift
+// (UI::Button<> in ui_button.h): 0x80 = just pressed, 0x7f = just released,
+// 0x00 = held — debounced for free at the 1 kHz tick.
 //
-// Phazerville does NOT use pin-change interrupts. ui.Poll() runs on a 1 kHz
-// UI timer and shifts each pin's level into an 8-bit history every tick.
-// Direction comes from detecting a rising edge on one phase while the other
-// phase is low across the last two samples. This is why the previous poll-with
-// -2ms-settle-filter dropped steps, and why an edge-ISR is unnecessary: at
-// 1 kHz a single detent is captured as one clean transition, and the rolling
-// bit history debounces for free. Buttons use the same 7-bit rolling shift:
-// 0x80 = just pressed, 0x7f = just released, 0x00 = held.
-// ---------------------------------------------------------------------------
+// Encoder decoding: full quadrature accumulation, not single-edge keying.
+// The Phazerville read() fires on one channel's falling edge while the other
+// is low. On a detented knob whose click doesn't land on that exact quadrature
+// state, that makes one click register as 0 or 2 values (the "can't stick"
+// jitter). Instead we track the 2-bit A/B state each tick and sum the net
+// transition (-1/0/+1). Bounce and half-positions cancel out (forward step
+// followed by back step = 0), so a value only moves once the knob has actually
+// turned a detent. ENC_CLICK_STEPS = quadrature steps per detent: 4 for knobs
+// that click once per full cycle, 2 if a click is a half cycle. Adjust if every
+// detent moves 2 values (raise it) or only every other detent moves (lower it).
+#ifndef ENC_CLICK_STEPS
+#define ENC_CLICK_STEPS 4
+#endif
+static const int8_t QD[16] = { 0, 1, -1, 0, -1, 0, 0, 1, 1, 0, 0, -1, 0, -1, 1, 0 };
+
 static uint32_t ui_ticks = 0;
 
 struct PhzEncoder {
-  uint8_t a = 0xFF, b = 0xFF;
-  void poll(uint8_t pin_a, uint8_t pin_b) {
-    a = (a << 1) | (digitalRead(pin_a) ? 1 : 0);
-    b = (b << 1) | (digitalRead(pin_b) ? 1 : 0);
+  uint8_t prev = 0xFF;   // last 2-bit (A<<1|B) state
+  int16_t acc = 0;       // accumulated quadrature steps
+  void init(uint8_t pin_a, uint8_t pin_b) {
+    prev = (digitalRead(pin_a) ? 2 : 0) | (digitalRead(pin_b) ? 1 : 0);
+    acc = 0;
   }
-  // Phazerville Read(): edge on A with B low => +1, edge on B with A low => -1.
+  void poll(uint8_t pin_a, uint8_t pin_b) {
+    uint8_t cur = (digitalRead(pin_a) ? 2 : 0) | (digitalRead(pin_b) ? 1 : 0);
+    if (cur != prev) {
+      acc += QD[(prev << 2) | cur];
+      prev = cur;
+    }
+  }
+  // Emit whole detents, keep the remainder so partial turns carry over.
   int8_t read() {
-    const uint8_t x = a & 0x03, y = b & 0x03;
-    if (x == 0x02 && y == 0x00) return 1;
-    if (y == 0x02 && x == 0x00) return -1;
-    return 0;
+    int8_t steps = acc / ENC_CLICK_STEPS;
+    acc -= steps * ENC_CLICK_STEPS;
+    if (steps > 8) steps = 8;
+    if (steps < -8) steps = -8;
+    return steps;
   }
 };
 
@@ -189,24 +186,12 @@ struct PhzButton {
   bool released()     const { return s == 0x7F; }  // first clean release sample
 };
 
-static PhzEncoder enc_l;
-#if HAS_RIGHT_ENC
-static PhzEncoder enc_r;
-#endif
-static PhzButton btn_enc_sw, btn_b2;
-#if HAS_RIGHT_ENC
-static PhzButton btn_enc_r_sw;
-#endif
-#if HAS_BOTTOM_BTN
-static PhzButton btn_b1;
-#endif
+
+static PhzEncoder enc_l, enc_r;
+static PhzButton btn_enc_sw, btn_b2, btn_enc_r_sw, btn_b1;
 static uint32_t enc_sw_down_tick = 0;
-#if HAS_RIGHT_ENC
 static uint32_t enc_r_sw_down_tick = 0;
 static bool enc_r_sw_handled = false;
-#else
-static uint32_t b2_down_tick = 0;
-#endif
 #define kLongPressTicks 500u
 
 static uint8_t ch_of_page() { return page - 1; }
@@ -361,9 +346,6 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
 
 static volatile int8_t pending_action = -1;
 static void do_action(uint8_t idx);
-#if !IS_O_C
-static void oled_pick_mode(uint8_t mode);
-#endif
 
 void ui_run_pending() {
   if (pending_action < 0) return;
@@ -415,10 +397,6 @@ static void do_action(uint8_t idx) {
     case 1: capture_state(blob); storage_save(SLOT_BANK2, blob); break;
     case 2: if (storage_load(SLOT_BANK1, blob)) restore_state(blob); break;
     case 3: if (storage_load(SLOT_BANK2, blob)) restore_state(blob); break;
-#if !IS_O_C
-    case 5: oled_pick_mode(0); return;   // no autosave mark for display choice
-    case 6: oled_pick_mode(2); return;
-#endif
     default:
       masterClock.bpm_cent = 12000;
       masterClock.source = 0;
@@ -430,135 +408,26 @@ static void do_action(uint8_t idx) {
   mark_dirty();
 }
 
-#if IS_O_C
 static void oled_flush() { oled_spi.flush(); }
-#else
-static void i2c_bus_recovery() {
-  // I2C spec "bus clear": a slave left mid-transfer holds SDA low forever
-  // (e.g. if the Teensy resets during a write). Clock SCL until SDA is
-  // released, then issue a STOP so the slave aborts cleanly.
-  pinMode(PIN_I2C_SCL, OUTPUT);
-  digitalWrite(PIN_I2C_SCL, HIGH);
-  pinMode(PIN_I2C_SDA, INPUT);
-  for (uint8_t i = 0; i < 18; i++) {
-    if (digitalRead(PIN_I2C_SDA) == HIGH) break;
-    delayMicroseconds(6);
-    digitalWrite(PIN_I2C_SCL, LOW);
-    delayMicroseconds(6);
-    digitalWrite(PIN_I2C_SCL, HIGH);
-  }
-  pinMode(PIN_I2C_SDA, OUTPUT);
-  digitalWrite(PIN_I2C_SDA, LOW);
-  delayMicroseconds(6);
-  digitalWrite(PIN_I2C_SCL, HIGH);
-  delayMicroseconds(6);
-  digitalWrite(PIN_I2C_SDA, HIGH);
-  delayMicroseconds(6);
-  pinMode(PIN_I2C_SDA, INPUT);
-  pinMode(PIN_I2C_SCL, INPUT);
-}
-
-static void oled_flush() {
-  if (oled_mode == 2) oled_sh.display();
-  else oled_ssd.display();
-}
-
-static bool oled_setup_mode(uint8_t mode, uint8_t addr) {
-  bool ok;
-  if (mode == 2) {
-    ok = oled_sh.begin(addr, true);
-    gfx = &oled_sh;
-  } else {
-    ok = oled_ssd.begin(SSD1306_SWITCHCAPVCC, addr);
-    gfx = &oled_ssd;
-  }
-  if (ok) oled_mode = mode;
-  return ok;
-}
-
-static uint8_t oled_preferred_mode() {
-  uint8_t m = oled_mode_load();
-  return (m == 2) ? 2 : 0;
-}
-
-// chosen from the SYS page: persist and re-init immediately
-static void oled_pick_mode(uint8_t mode) {
-  oled_mode_save(mode);
-  if (display_addr && oled_setup_mode(mode, display_addr)) {
-    gfx->fillScreen(PNC_BLACK);
-    oled_flush();
-  }
-}
-
-// First boot (no saved choice): flash panel with 1=SSD1306, 2=SH1106;
-// user picks the one that flashed in the SYS page, choice is remembered.
-static void oled_probe(uint8_t addr) {
-  Serial.println("pnc: probe -> count white flashes: 1=SSD1306 2=SH1106");
-  for (uint8_t m = 0; m <= 2; m += 2) {
-    oled_setup_mode(m, addr);
-    gfx->fillScreen(PNC_BLACK);
-    oled_flush();
-    for (uint8_t f = 0; f <= m / 2; f++) {
-      gfx->fillScreen(PNC_WHITE); oled_flush(); delay(150);
-      gfx->fillScreen(PNC_BLACK); oled_flush(); delay(150);
-    }
-    delay(600);
-  }
-  oled_setup_mode(0, addr);
-}
-#endif
 
 void ui_init() {
-  btn_enc_sw.init(PIN_ENC_SW);
-  btn_b2.init(PIN_BTN_B2);
-#if HAS_RIGHT_ENC
-  btn_enc_r_sw.init(PIN_ENC_R_SW);
-#endif
-#if HAS_BOTTOM_BTN
-  btn_b1.init(PIN_BTN_B1);
-#endif
-  // Encoder A/B pins get INPUT_PULLUP via the poll path; set them here so the
-  // first shift-register samples are valid.
   pinMode(PIN_ENC_A, INPUT_PULLUP);
   pinMode(PIN_ENC_B, INPUT_PULLUP);
-#if HAS_RIGHT_ENC
   pinMode(PIN_ENC_R_A, INPUT_PULLUP);
   pinMode(PIN_ENC_R_B, INPUT_PULLUP);
-#endif
+  enc_l.init(PIN_ENC_A, PIN_ENC_B);
+  enc_r.init(PIN_ENC_R_A, PIN_ENC_R_B);
+
+  btn_enc_sw.init(PIN_ENC_SW);
+  btn_b2.init(PIN_BTN_B2);
+  btn_enc_r_sw.init(PIN_ENC_R_SW);
+  btn_b1.init(PIN_BTN_B1);
   param_idx = 0;
 
-#if IS_O_C
   // dac_init() already ran SPI.begin(); panel init needs no address
   oled_spi.begin();
   display_ok = true;
   Serial.printf("pnc: boot, oled %s\n", DISPLAY_KIND);
-#else
-  i2c_bus_recovery();
-  Wire.begin();
-  Wire.setClock(400000);
-  static const uint8_t ADDRS[] = { DISPLAY_ADDRESS, 0x3D };
-  for (uint8_t i = 0; i < 2 && !display_addr; i++) {
-    Wire.beginTransmission(ADDRS[i]);
-    if (Wire.endTransmission() == 0) display_addr = ADDRS[i];
-  }
-  uint8_t pref = oled_preferred_mode();
-  bool first_boot = (oled_mode_load() == 0xFF);
-  display_ok = display_addr && oled_setup_mode(pref, display_addr);
-  Serial.printf("pnc: boot, oled %s @0x%02X mode %u\n",
-                display_ok ? "init" : "FAIL", display_addr, pref);
-  if (!display_addr) {
-    Serial.print("pnc: i2c scan:");
-    for (uint8_t a = 8; a < 120; a++) {
-      Wire.beginTransmission(a);
-      if (Wire.endTransmission() == 0) Serial.printf(" 0x%02X", a);
-    }
-    Serial.println();
-  }
-  if (display_ok && first_boot) {
-    oled_probe(display_addr);
-    oled_setup_mode(pref, display_addr);
-  }
-#endif
   if (!display_ok) return;  // boot without display rather than hanging in setup()
   gfx->setTextSize(1);
   gfx->cp437(true);
@@ -579,7 +448,6 @@ static void page_next() {
   page = (page + 1) % (NUM_OUTPUTS + 2);
   param_idx = 0;
 }
-#if HAS_RIGHT_ENC
 static void page_prev() {
   page = (page + (NUM_OUTPUTS + 2) - 1) % (NUM_OUTPUTS + 2);
   param_idx = 0;
@@ -600,46 +468,44 @@ static void select_rel(int8_t d) {
   else if (n >= (int8_t)param_count()) { page_next(); param_idx = 0; }
   else param_idx = n;
 }
-#endif
 
 // Poll all encoder + button pins once per 1 kHz tick, exactly like Phazerville's
 // UI::Encoder::Poll / UI::Button::Poll feeding ui.Poll() at OC_UI_TIMER_RATE.
+//
+// O_C dual-knob scheme:
+//   LEFT turn  = edit selected value (hold LEFT push = fine steps, live in adjust())
+//   RIGHT turn = select param / wrap into pages
+//   LEFT push tap = next param (or execute highlighted action on SYS page)
+//   RIGHT push tap = start/stop clock (or SYS execute), hold = reset phases
+//   TOP button = next page, BOTTOM button = prev page
 void ui_service() {
   ui_ticks++;
 
   enc_l.poll(PIN_ENC_A, PIN_ENC_B);
-  btn_enc_sw.poll(PIN_ENC_SW);
-#if HAS_RIGHT_ENC
   enc_r.poll(PIN_ENC_R_A, PIN_ENC_R_B);
+  btn_enc_sw.poll(PIN_ENC_SW);
   btn_enc_r_sw.poll(PIN_ENC_R_SW);
-#endif
   btn_b2.poll(PIN_BTN_B2);
-#if HAS_BOTTOM_BTN
   btn_b1.poll(PIN_BTN_B1);
-#endif
 
   // LEFT encoder = edit the selected value.
   int8_t dl = enc_l.read();
   while (dl > 0) { adjust(1); dl--; }
   while (dl < 0) { adjust(-1); dl++; }
 
-#if HAS_RIGHT_ENC
   // RIGHT encoder = select param / wrap into pages.
   int8_t dr = enc_r.read();
   while (dr > 0) { select_rel(1); dr--; }
   while (dr < 0) { select_rel(-1); dr++; }
-#endif
 
-  // Buttons change pages on release (tap). Encoder pushes: LEFT fine-step is
-  // read live in adjust(); its tap cycles params. RIGHT push tap = run/stop
-  // (or SYS execute), hold = reset phases.
+  // LEFT push: tap = next param (SYS: execute action).
   if (btn_enc_sw.just_pressed()) enc_sw_down_tick = ui_ticks;
   else if (btn_enc_sw.released()) {
     if (is_sys()) pending_action = param_idx;
     else if (ui_ticks - enc_sw_down_tick < kLongPressTicks) param_idx = (param_idx + 1) % param_count();
   }
 
-#if HAS_RIGHT_ENC
+  // RIGHT push: tap = run/stop (SYS: execute), hold = reset phases.
   if (btn_enc_r_sw.just_pressed()) { enc_r_sw_down_tick = ui_ticks; enc_r_sw_handled = false; }
   else if (btn_enc_r_sw.pressed() && !enc_r_sw_handled
            && ui_ticks - enc_r_sw_down_tick == kLongPressTicks && !is_sys()) {
@@ -649,29 +515,9 @@ void ui_service() {
     else { masterClock.running = !masterClock.running; mark_dirty(); }
   }
 
-  // TOP button = next page, BOTTOM button = prev page.
+  // Two buttons: top = next page, bottom = prev page.
   if (btn_b2.released()) page_next();
-#if HAS_BOTTOM_BTN
   if (btn_b1.released()) page_prev();
-#endif
-#else
-  // DIY single-encoder: LEFT encoder does value + param; hold = next page.
-  // B2: tap = run (if stopped) else reset phases; hold = start/stop toggle.
-  if (btn_enc_sw.just_pressed()) enc_sw_down_tick = ui_ticks;
-  else if (btn_enc_sw.pressed() && ui_ticks - enc_sw_down_tick == kLongPressTicks) {
-    page_next(); enc_sw_down_tick = ui_ticks + kLongPressTicks;  // fire once per hold
-  } else if (btn_enc_sw.released()) {
-    if (is_sys()) pending_action = param_idx;
-    else if (ui_ticks - enc_sw_down_tick < kLongPressTicks) param_idx = (param_idx + 1) % param_count();
-  }
-
-  if (btn_b2.just_pressed()) b2_down_tick = ui_ticks;
-  else if (btn_b2.pressed() && ui_ticks - b2_down_tick == kLongPressTicks) {
-    masterClock.running = !masterClock.running; mark_dirty();
-  } else if (btn_b2.released() && ui_ticks - b2_down_tick < kLongPressTicks) {
-    if (!masterClock.running) masterClock.running = true; else channels_reset();
-  }
-#endif
 }
 
 void ui_draw() {
@@ -684,7 +530,7 @@ void ui_draw() {
   if (is_master()) {
     gfx->setCursor(0, 0);
     gfx->printf("M %d.%02d %s", masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
-                masterClock.source == 2 ? "MIDI" : (masterClock.source ? "EXT" : "INT"));
+                masterClock.source ? "EXT" : "INT");
     if (masterClock.source && masterClock.measured_bpm_cent()) {
       gfx->setCursor(80, 0);
       gfx->printf("%d.%02d", masterClock.measured_bpm_cent() / 100, masterClock.measured_bpm_cent() % 100);
@@ -741,5 +587,4 @@ void ui_draw() {
 uint8_t ui_current_page() { return page; }
 
 bool ui_display_found() { return display_ok; }
-uint8_t ui_display_addr() { return display_addr; }
 uint8_t ui_current_channel() { return is_master() ? 0xFF : ch_of_page(); }

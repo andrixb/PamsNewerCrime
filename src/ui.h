@@ -10,4 +10,3 @@ void ui_draw();
 uint8_t ui_current_page();
 uint8_t ui_current_channel();
 bool ui_display_found();
-uint8_t ui_display_addr();

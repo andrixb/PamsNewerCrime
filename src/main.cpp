@@ -18,7 +18,7 @@ static void ck_isr() {
 
 static void control_tick() {
   tick_count++;
-  ui_service();               // full 1 kHz: fast, reliable encoder reads
+  ui_service();               // 1 kHz: poll + apply encoders/buttons
   if ((tick_count % 8) == 0) {
     uint16_t r1 = analogRead(PIN_CV_IN1);
     uint16_t r2 = analogRead(PIN_CV_IN2);
@@ -40,35 +40,8 @@ static void autosave() {
   }
 }
 
-#if HAS_MIDI_IN
-static void midi_poll() {
-  static int8_t expected_data = 0;  // -1 = inside sysex
-  while (MIDI_SERIAL.available()) {
-    uint8_t b = MIDI_SERIAL.read();
-    if (b >= 0xF8) {  // real-time, can interleave anywhere
-      switch (b) {
-        case 0xF8: masterClock.pulse_midi(); break;
-        case 0xFA: masterClock.source = 2; masterClock.running = true; masterClock.reset_phase(); break;
-        case 0xFB: masterClock.running = true; break;
-        case 0xFC: masterClock.running = false; break;
-      }
-      continue;
-    }
-    if (b >= 0x80) {
-      expected_data = (b == 0xF0) ? -1 : ((b >= 0xC0 && b < 0xE0) ? 1 : 2);
-      continue;
-    }
-    if (expected_data < 0) { if (b == 0xF7) expected_data = 0; continue; }
-    if (expected_data > 0) expected_data--;
-  }
-}
-#endif
-
 void setup() {
   Serial.begin(115200);
-#if HAS_MIDI_IN
-  MIDI_SERIAL.begin(31250);
-#endif
   analogReadResolution(12);
   dac_init();
   storage_init();
@@ -96,9 +69,6 @@ void loop() {
                   masterClock.bpm_cent / 100, ui_current_page(),
                   ui_display_found() ? "ok" : "MISSING");
   }
-#if HAS_MIDI_IN
-  midi_poll();
-#endif
   ui_run_pending();
   uint32_t now = millis();
   if (now - last_ui_ms > 33) {
