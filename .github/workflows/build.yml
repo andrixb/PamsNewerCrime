@@ -34,6 +34,9 @@ jobs:
       - name: Build Teensy 4.1 SH1106 (8 outs)
         run: pio run -e teensy41_sh1106
 
+      - name: Build Teensy 4.0 O_C hardware (4 outs)
+        run: pio run -e teensy40_oc
+
       - name: Stage hex files
         run: |
           mkdir -p dist
@@ -41,6 +44,7 @@ jobs:
           cp .pio/build/teensy41/firmware.hex dist/pams-newer-crime-teensy41.hex
           cp .pio/build/teensy40_sh1106/firmware.hex dist/pams-newer-crime-teensy40-sh1106.hex
           cp .pio/build/teensy41_sh1106/firmware.hex dist/pams-newer-crime-teensy41-sh1106.hex
+          cp .pio/build/teensy40_oc/firmware.hex dist/pams-newer-crime-teensy40-oc.hex
 
       - uses: actions/upload-artifact@v4
         with:

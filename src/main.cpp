@@ -40,6 +40,7 @@ static void autosave() {
   }
 }
 
+#if HAS_MIDI_IN
 static void midi_poll() {
   static int8_t expected_data = 0;  // -1 = inside sysex
   while (MIDI_SERIAL.available()) {
@@ -61,17 +62,25 @@ static void midi_poll() {
     if (expected_data > 0) expected_data--;
   }
 }
+#endif
 
 void setup() {
   Serial.begin(115200);
+#if HAS_MIDI_IN
   MIDI_SERIAL.begin(31250);
+#endif
   analogReadResolution(12);
   dac_init();
   storage_init();
   ui_init();
   masterClock.begin();
+#if TR_ACTIVE_LOW
+  pinMode(PIN_CK_IN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_CK_IN), ck_isr, FALLING);
+#else
   pinMode(PIN_CK_IN, INPUT_PULLDOWN);
   attachInterrupt(digitalPinToInterrupt(PIN_CK_IN), ck_isr, RISING);
+#endif
   ctrl_timer.begin(control_tick, (uint32_t)(1000000 / CONTROL_RATE_HZ));
   ctrl_timer.priority(16);
   Serial.println("pnc: setup done");
@@ -83,11 +92,13 @@ void loop() {
   uint32_t beat = millis();
   if (beat - last_beat_ms > 5000) {
     last_beat_ms = beat;
-    Serial.printf("pnc: alive ticks=%u bpm=%d page=%d oled=%s@0x%02X\n", tick_count,
+    Serial.printf("pnc: alive ticks=%u bpm=%d page=%d oled=%s\n", tick_count,
                   masterClock.bpm_cent / 100, ui_current_page(),
-                  ui_display_found() ? "ok" : "MISSING", ui_display_addr());
+                  ui_display_found() ? "ok" : "MISSING");
   }
+#if HAS_MIDI_IN
   midi_poll();
+#endif
   ui_run_pending();
   uint32_t now = millis();
   if (now - last_ui_ms > 33) {

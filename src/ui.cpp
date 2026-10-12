@@ -1,19 +1,101 @@
 #include "ui.h"
 #include "clock.h"
 #include "storage.h"
-#include <Wire.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <Adafruit_SH110X.h>
 
+#if defined(HARDWARE_O_C) && HARDWARE_O_C == 1
+// ---------------------------------------------------------------------------
+// Genuine O_C panel: SH1106 128x64 on SPI (shared bus with the DAC8565).
+// Own framebuffer + per-page diff flush; noInterrupts() around each page so
+// the 1 kHz DAC writes can never interleave on the shared SPI lines.
+// Column addressing matches Phazerville: pages start at column 2 (SH1106
+// 132-column RAM offset), page-addressing mode.
+// ---------------------------------------------------------------------------
+#include <SPI.h>
+class PncSpiOled : public Adafruit_GFX {
+public:
+  PncSpiOled() : Adafruit_GFX(128, 64) {
+    memset(fb, 0, sizeof(fb));
+    memset(last, 0xFF, sizeof(last));
+  }
+  void begin() {
+    pinMode(PIN_OLED_CS, OUTPUT);  digitalWrite(PIN_OLED_CS, HIGH);
+    pinMode(PIN_OLED_DC, OUTPUT);  digitalWrite(PIN_OLED_DC, HIGH);
+    pinMode(PIN_OLED_RST, OUTPUT);
+    digitalWrite(PIN_OLED_RST, HIGH); delay(1);
+    digitalWrite(PIN_OLED_RST, LOW);  delay(10);
+    digitalWrite(PIN_OLED_RST, HIGH); delay(20);
+    static const uint8_t init_seq[] = {
+      0xAE,             // display off
+      0xD5, 0x80,       // clock divide / osc freq
+      0xA8, 0x3F,       // multiplex 1/64
+      0xD3, 0x00,       // display offset 0
+      0x40,             // start line 0
+      0x8D, 0x14,       // charge pump
+      0x20, 0x00,       // page addressing mode
+      0xA1, 0xC8,       // segment remap / scan dir
+      0xDA, 0x12,       // com pins config
+      0x81, 0xCF,       // contrast
+      0xD9, 0xF1,       // pre-charge period
+      0xDB, 0x40,       // vcomh deselect
+      0x2E,             // no scroll
+      0xA4,             // output RAM->panel
+      0xA6,             // non-inverted
+      0xAF,             // display on
+    };
+    digitalWrite(PIN_OLED_CS, LOW);
+    xfer(false, init_seq, sizeof(init_seq));
+    digitalWrite(PIN_OLED_CS, HIGH);
+  }
+  void drawPixel(int16_t x, int16_t y, uint16_t c) override {
+    if (x < 0 || y < 0 || x >= 128 || y >= 64) return;
+    uint8_t *p = &fb[(y >> 3) * 128 + x];
+    if (c) *p |=  (uint8_t)(1u << (y & 7));
+    else   *p &= (uint8_t)~(1u << (y & 7));
+  }
+  void flush() {
+    for (uint8_t pg = 0; pg < 8; pg++) {
+      uint8_t *p = &fb[pg * 128];
+      uint8_t *q = &last[pg * 128];
+      if (memcmp(p, q, 128) == 0) continue;
+      memcpy(q, p, 128);
+      const uint8_t seq[3] = { 0x10, 0x02, (uint8_t)(0xB0 | pg) };
+      noInterrupts();
+      digitalWrite(PIN_OLED_CS, LOW);
+      xfer(false, seq, 3);          // command phase (DC low), CS held
+      xfer(true, p, 128);           // data phase (DC high)
+      digitalWrite(PIN_OLED_CS, HIGH);
+      interrupts();
+      delayMicroseconds(2);
+    }
+  }
+private:
+  uint8_t fb[1024];
+  uint8_t last[1024];
+  void xfer(bool data, const uint8_t *b, size_t n) {
+    digitalWrite(PIN_OLED_DC, data ? HIGH : LOW);
+    for (size_t i = 0; i < n; i++) SPI.transfer(b[i]);
+  }
+};
+static PncSpiOled oled_spi;
+static Adafruit_GFX *gfx = &oled_spi;
+static uint8_t display_addr = 0;
 #define PNC_BLACK 0
 #define PNC_WHITE 1
-
+#else
+#include <Wire.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_SH110X.h>
 static Adafruit_SSD1306 oled_ssd(128, 64, &Wire, DISPLAY_RESET);
 static Adafruit_SH110X  oled_sh(128, 64, &Wire, DISPLAY_RESET);
 static Adafruit_GFX *gfx = nullptr;
-// 0 = SSD1306 128x64, 1 = SSD1306 128x32, 2 = SH1106
+static uint8_t display_addr = 0;
+// 0 = SSD1306, 2 = SH1106
 static uint8_t oled_mode = 0;
+#define PNC_BLACK 0
+#define PNC_WHITE 1
+#endif
+static bool display_ok = false;
 
 extern Channel channels[NUM_OUTPUTS];
 
@@ -22,6 +104,9 @@ static const char *WAVE_NAMES[] = { "sin", "tri", "saw", "sqr" };
 static const char *CVP_NAMES[]  = { "--", "range", "width", "phase", "delay", "prob", "ratio" };
 static const char *SCALE_NAMES[] = { "chro", "major", "minor", "dorian", "phryg", "lydian", "mixolyd", "harm", "penta", "pentmn", "blues", "whole" };
 static const char *LOGIC_NAMES[] = { "--", "and", "or", "xor", "nand", "nor" };
+static const char *SRC_NAMES[3] = { "int", "ext", "midi" };
+#define SRC_COUNT (HAS_MIDI_IN ? 3 : 2)
+
 static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A", "load bank B", "defaults" };
 
 #define P_RATIO 0
@@ -117,7 +202,7 @@ static void set_val(uint8_t ch, uint8_t idx, int32_t v) {
     switch (idx) {
       case 0: masterClock.bpm_cent = constrain(v, BPM_MIN, BPM_MAX); break;
       case 1: {
-        uint8_t s = (uint8_t)(((v % 3) + 3) % 3);
+        uint8_t s = (uint8_t)(((v % SRC_COUNT) + SRC_COUNT) % SRC_COUNT);
         if (s != masterClock.source) { masterClock.source = s; masterClock.reset_phase(); }
         break;
       }
@@ -214,7 +299,6 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
   }
 }
 
-static const char *SRC_NAMES[3] = { "int", "ext", "midi" };
 static volatile int8_t pending_action = -1;
 static void do_action(uint8_t idx);
 
@@ -230,7 +314,7 @@ static void fmt_val(uint8_t ch, uint8_t idx, char *buf, size_t n) {
   if (is_master()) {
     switch (idx) {
       case 0: snprintf(buf, n, "%d.%02d", v / 100, v % 100); break;
-      case 1: snprintf(buf, n, "%s", SRC_NAMES[v % 3]); break;
+      case 1: snprintf(buf, n, "%s", SRC_NAMES[v % SRC_COUNT]); break;
       case 2: snprintf(buf, n, "%d", v); break;
       default: snprintf(buf, n, v ? "run" : "stop"); break;
     }
@@ -279,9 +363,9 @@ static void do_action(uint8_t idx) {
   mark_dirty();
 }
 
-static bool display_ok = false;
-static uint8_t display_addr = 0;
-
+#if defined(HARDWARE_O_C) && HARDWARE_O_C == 1
+static void oled_flush() { oled_spi.flush(); }
+#else
 static void i2c_bus_recovery() {
   // I2C spec "bus clear": a slave left mid-transfer holds SDA low forever
   // (e.g. if the Teensy resets during a write). Clock SCL until SDA is
@@ -346,6 +430,7 @@ static void oled_probe(uint8_t addr) {
     delay(600);
   }
 }
+#endif
 
 void ui_init() {
   pinMode(PIN_ENC_A, INPUT_PULLUP);
@@ -355,6 +440,12 @@ void ui_init() {
   enc_state = (digitalRead(PIN_ENC_B) ? 1 : 0) | (digitalRead(PIN_ENC_A) ? 2 : 0);
   param_idx = 0;
 
+#if defined(HARDWARE_O_C) && HARDWARE_O_C == 1
+  // dac_init() already ran SPI.begin(); panel init needs no address
+  oled_spi.begin();
+  display_ok = true;
+  Serial.printf("pnc: boot, oled %s\n", DISPLAY_KIND);
+#else
   i2c_bus_recovery();
   Wire.begin();
   Wire.setClock(400000);
@@ -375,9 +466,12 @@ void ui_init() {
     }
     Serial.println();
   }
+  if (display_ok) {
+    oled_probe(display_addr);
+    oled_setup_mode(pref, display_addr);
+  }
+#endif
   if (!display_ok) return;  // boot without display rather than hanging in setup()
-  oled_probe(display_addr);
-  oled_setup_mode(pref, display_addr);
   gfx->setTextSize(1);
   gfx->cp437(true);
 }

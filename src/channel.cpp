@@ -70,13 +70,20 @@ static int quantize_semi(int pos, uint16_t mask) {
   return pos;
 }
 
-static uint8_t resolve_in(uint8_t sel, uint8_t cv1, uint8_t cv2) {
+static int resolve_in(uint8_t sel, uint8_t cv1, uint8_t cv2) {
+#if CV_BIPOLAR
+  // O_C front-end: CV1/CV2 jacks are bipolar (0V = midscale ~128); re-center
+  // to signed modulation. Cross-patched channel values stay unipolar 0..255.
+  if (sel == 0) return (int)(int8_t)(cv1 ^ 0x80);
+  if (sel == 1) return (int)(int8_t)(cv2 ^ 0x80);
+#else
   if (sel == 0) return cv1;
   if (sel == 1) return cv2;
+#endif
   uint8_t ch = sel - 2;
   if (ch >= NUM_OUTPUTS) return 0;
   uint16_t mv = channels[ch].out_mv;
-  return mv >= 4080 ? 255 : (mv >> 4);
+  return mv >= DAC_MAX_MV ? 255 : (uint8_t)((uint32_t)mv * 255 / DAC_MAX_MV);
 }
 
 static void apply_cv(ChannelParams &p, uint8_t src, int8_t scale, int val) {
@@ -346,6 +353,6 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
       c.filt_mv = mv;
     }
     c.out_mv = mv;
-    dac_write(i, (uint32_t)mv * 4095 / DAC_MAX_MV);
+    dac_write(i, mv);
   }
 }

@@ -45,6 +45,34 @@ implementation is original code, written from scratch for Teensy 4 hardware.
 
 ## Hardware
 
+Two hardware profiles are supported, selected at build time:
+
+| Build env | Target | Display | DAC |
+|-----------|--------|---------|-----|
+| `teensy40_oc` | **genuine O_C board** (14HP original or uO_c 8HP micro), Teensy 4.0 drop-in | SH1106 on SPI, CS=8 DC=6 RST=7 | DAC8565 quad on same SPI, CS=10 RST=9, **0-10 V** |
+| `teensy40` / `teensy41` | DIY breadboard per the wiring table below | SSD1306/SH1106 on I2C (18/19) | MCP4822 x2-x4 on CS 10/9/8/7, **0-4.09 V** |
+| `teensy40_sh1106` / `teensy41_sh1106` | same as above, SH1106 I2C modules | | |
+
+### O_C hardware profile (`teensy40_oc`)
+
+If your Teensy 4.0 sits on an O_C / uO_c shield, flash `pams-newer-crime-teensy40-oc.hex`.
+It uses the exact pin map of the O_C family (verified against Phazerville):
+
+| Function | Teensy 4.0 pin | O_C side |
+|----------|----------------|----------|
+| OLED CS / DC / RST | 8 / 6 / 7 | SH1106 SPI panel |
+| DAC CS / RST | 10 / 9 | DAC8565 (outputs 1-4, 0-10 V) |
+| Encoder A / B / push | 22 / 21 / 23 | left encoder |
+| Button B2 | 5 | top button (4 = bottom, unused) |
+| Clock input | 0 | TR1 jack (active-low triggers) |
+| CV in 1 / 2 | A3 / A4 (CV1/CV2 jacks) | bipolar, 0 V = mid |
+
+MIDI input is unavailable on this profile (pin 0 is the TR1 jack); external clock
+via TR jacks works. Note: O_C output stage calibration differs from O_C firmware —
+outputs are linear 0-10 V without the module's calibration table.
+
+### DIY breadboard profile
+
 Teensy 4 has no DAC, so CV outputs use SPI DACs (12-bit, buffered, gain x2).
 Outputs are **0-4.09 V**; add an op-amp gain/offset stage (e.g. TL072 x2 + offset)
 if you need full 0-8 V eurorack range.
@@ -66,31 +94,23 @@ Other pins:
 
 | Function            | Pin        | Notes |
 |---------------------|------------|-------|
-| SSD1306 OLED SDA    | 18         | I2C, 3.3 V module |
-| SSD1306 OLED SCL    | 19         | |
-
-### OLED controller variants (blank screen?)
-
-Most 128x64 I2C OLEDs use an **SSD1306**; but a large share of cheap modules
-(and the O_C / Phazerville panels this project is named after) use the **SH1106**.
-A SH1106 panel will *acknowledge* I2C and report `begin()` success, yet stay
-completely blank, because SH1106 has 132 columns with a +2 offset and only supports
-page addressing. Build the matching variant:
-
-- `teensy40` / `teensy41` — SSD1306 (default)
-- `teensy40_sh1106` / `teensy41_sh1106` — SH1106 (adds `-DDISPLAY_SH1106=1`)
-
-On boot the firmware flashes the panel all-white then all-black as a self-test, and
-prints status over USB serial (`pnc: boot, oled found (addr 0x3C)`). If the screen
-never flashes white/black on the SSD1306 build, reflash the `_sh1106` build. Use the
-web flasher's **Debug console** (step 4 on the page) to read the serial status.
+| SSD1306 OLED SDA/SCL| 18 / 19    | I2C, 3.3 V module |
 | Encoder A / B / SW  | 4 / 5 / 6  | to GND, internal pullups |
 | Button B2           | 2          | to GND |
 | Clock input         | 3          | 3.3 V logic; use 74HC14 Schmitt trigger from eurorack 5-12 V |
-| MIDI in (RX1)       | 0          | 31250 baud; standard 6N138/6N139 optocoupler front-end (or resistor-divided direct line-out for testing) |
+| MIDI in (RX1)       | 0          | 31250 baud; standard 6N138/6N139 optocoupler front-end |
 | CV input 1 / 2      | A0 (16) / A1 (17) | divider 100k/150k -> 0-3.3 V for 0-5.5 V input |
 
-### MIDI clock input
+### Blank I2C screen? (SSD1306 vs SH1106)
+
+Many "128x64 I2C OLED" modules carry an **SH1106** instead of the SSD1306 its
+label claims. An SH1106 acknowledges I2C at 0x3C and `begin()` reports success,
+yet stays completely blank (132-column RAM with +2 offset, page addressing only).
+If the boot self-test (white flash) doesn't appear on the `teensy40` build, flash
+`teensy40_sh1106` instead. Both I2C builds are auto-probed at boot: the panel
+flashes **1x = SSD1306**, **2x = SH1106** (also logged to the debug console).
+
+### MIDI clock input (DIY profile)
 
 Connect a DIN-5 MIDI socket through an optocoupler to pin 0 (RX1). Real-time Clock
 (0xF8), Start (0xFA), Continue (0xFB) and Stop (0xFC) are handled; other messages are
@@ -142,8 +162,9 @@ other Teensy sketches.
 PlatformIO (recommended):
 
 ```
-pio run -e teensy40      # Teensy 4.0, 4 outputs
-pio run -e teensy41      # Teensy 4.1, 8 outputs
+pio run -e teensy40        # Teensy 4.0, 4 outs, DIY wiring, I2C SSD1306
+pio run -e teensy40_oc     # Teensy 4.0 on genuine O_C / uO_c hardware
+pio run -e teensy41        # Teensy 4.1, 8 outs, DIY wiring
 pio run -e teensy40 -t upload
 ```
 
