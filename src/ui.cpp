@@ -808,18 +808,16 @@ void ui_draw() {
   const int16_t mx = (int16_t)METR_X;
   const int16_t col_w = 128 - mx;                // usable width for the meter
   const int16_t bw = col_w / NUM_OUTPUTS;        // per-bar pitch
-  const int16_t box_top = 9, box_bot = 62;       // box occupies rows 9..61 inclusive
-  const int16_t in_l = 1;                        // left inset inside each cell
-  const int16_t cell_w = bw - 2;                 // drawn width (1px gap each side)
-  const int16_t gate_h = 3;                      // gate strip height, at the base
-  const int16_t gate_bot = box_bot - 1;          // gate band bottom row (61)
-  const int16_t gate_top = gate_bot - gate_h + 1;// gate band top row (59)
-  const int16_t lvl_base = gate_top;              // level rises from here upward
-  const int16_t lvl_top = box_top + 1;           // level ceiling
+  const int16_t box_top = 8, box_btm = 63;       // walls: top row 8, bottom row 63 (full height)
+  const int16_t cell_w = bw - 2;                 // drawn width (1px gutter each side)
+  const int16_t gate_h = 3;                      // gate band height, at the interior base
+  const int16_t gate_top = box_btm - gate_h;     // gate band rows [gate_top, box_btm-1]
+  const int16_t lvl_base = gate_top;             // level rises upward from here
+  const int16_t lvl_top = box_top + 1;           // level ceiling (interior top)
   const int16_t lvl_h = lvl_base - lvl_top;      // fillable rows for the level
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
-    int16_t x = mx + i * bw + in_l;
-    gfx->drawRect(x, box_top, cell_w, box_bot - box_top, PNC_WHITE);
+    int16_t x = mx + i * bw + 1;
+    gfx->drawRect(x, box_top, cell_w, box_btm - box_top + 1, PNC_WHITE);
     int32_t lo = channels[i].p.cv_min, hi = channels[i].p.cv_max;
     int32_t mv = (int32_t)channels[i].out_mv;
     int32_t span = hi - lo;
