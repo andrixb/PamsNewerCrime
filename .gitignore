@@ -4,4 +4,4 @@ build/
 *.hex
 *.lmap
 .DS_Store
-.vscode
+.vscode/
