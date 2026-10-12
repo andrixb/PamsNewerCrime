@@ -13,7 +13,7 @@
 #define MAX_STEPS         16
 #define EUCLID_MAX_LEN    32
 #define BPM_MIN           1000
-#define BPM_MAX           30000
+#define BPM_MAX           33000
 #define NUM_BANKS         2
 
 // ---------------------------------------------------------------------------

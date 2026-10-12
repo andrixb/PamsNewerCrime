@@ -2,6 +2,19 @@
 
 MasterClock masterClock;
 
+// Quarter-note length in the internal x256 phase unit (TICKS_PER_QUARTER * 256).
+static const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+
+// Map an un-warped phase rb in [0, QT] to swung output phase. The first eighth
+// occupies rawA of the raw quarter (rawA = QT/2 * (1 + 2*swing/128)), the second
+// eighth the remainder; both halves emit QT/2 of output, so a full quarter still
+// emits exactly QT -> quarter boundaries stay locked to the nominal tempo.
+static uint32_t warp_raw(uint32_t rb, uint32_t rawA, uint32_t half) {
+  if (rb <= rawA) return (uint32_t)((uint64_t)rb * half / rawA);
+  uint32_t seg2 = QT - rawA;
+  return half + (uint32_t)((uint64_t)(rb - rawA) * half / seg2);
+}
+
 void MasterClock::begin() {
   pinMode(PIN_CK_IN, INPUT);
 }
@@ -12,6 +25,7 @@ void MasterClock::pulse_external() {
 
 void MasterClock::reset_phase() {
   frac_acc = 0;
+  raw_beat = 0;
   consumed_pulses = ext_pulses;
   ext_avg_us = 0;
 }
@@ -29,9 +43,33 @@ void MasterClock::tick() {
     frac_acc += (uint64_t)TICKS_PER_QUARTER * 256 * bpm * 10;
     uint64_t denom = 60ULL * 1000ULL * (CONTROL_RATE_HZ / 1000) * 100;
     uint32_t whole = (uint32_t)(frac_acc / denom);
-    if (whole) {
-      frac_acc -= whole * denom;
+    if (!whole) return;
+    frac_acc -= (uint64_t)whole * denom;
+
+    if (!swing) {
       delta_x256 += whole;
+      raw_beat += whole;
+      if (raw_beat >= QT) raw_beat -= QT;
+      return;
+    }
+
+    // Distribute `whole` raw units through the swing warp, never crossing a
+    // segment/grid boundary within a single delta step.
+    uint32_t rawA = QT / 2 + (uint32_t)((uint64_t)QT * swing / 128);
+    if (rawA >= QT) rawA = QT - 1;
+    uint32_t half = QT / 2;
+    uint32_t add = whole;
+    while (add) {
+      uint32_t bound = (raw_beat < rawA) ? rawA : QT;
+      uint32_t seg_left = bound - raw_beat;
+      uint32_t step = add < seg_left ? add : seg_left;
+      uint32_t o0 = warp_raw(raw_beat, rawA, half);
+      uint32_t rb2 = raw_beat + step;
+      uint32_t o1 = warp_raw(rb2 < QT ? rb2 : QT, rawA, half);
+      delta_x256 += (o1 - o0);
+      raw_beat = rb2;
+      if (raw_beat >= QT) raw_beat -= QT;
+      add -= step;
     }
   } else {
     uint32_t pulses = ext_pulses;

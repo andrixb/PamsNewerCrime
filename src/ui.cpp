@@ -88,15 +88,17 @@ static bool display_ok = false;
 
 extern Channel channels[NUM_OUTPUTS];
 
-static const char *MODE_NAMES[] = { "off", "pulse", "LFO", "ramp", "step", "S&H", "note", "env", "logic", "woggle", "rwalk" };
-static const char *WAVE_NAMES[] = { "sin", "tri", "saw", "sqr" };
-static const char *CVP_NAMES[]  = { "--", "range", "width", "phase", "delay", "prob", "ratio" };
-static const char *SCALE_NAMES[] = { "chro", "major", "minor", "dorian", "phryg", "lydian", "mixolyd", "harm", "penta", "pentmn", "blues", "whole" };
+static const char *MODE_NAMES[] = { "off", "pulse", "LFO", "ramp", "step", "S&H", "note", "env", "logic", "woggle", "rwalk", "div", "quant", "ratch" };
+static const char *WAVE_NAMES[] = { "sin", "tri", "saw", "sqr", "trapz", "parab" };
+static const char *CVP_NAMES[]  = { "--", "range", "width", "phase", "delay", "prob", "ratio", "div", "skew", "attack", "decay", "slew" };
+static const char *SCALE_NAMES[] = { "chro", "major", "minor", "dorian", "phryg", "lydian", "mixolyd", "harm", "penta", "pentmn", "blues", "whole", "melmin", "harmaj", "dor#4", "phrdom", "loc", "alter", "lyddom", "dblharm", "enigm", "hiraj", "in", "iwato", "prom", "triton", "dim", "aug", "blsmaj", "user1", "user2", "user3" };
 static const char *LOGIC_NAMES[] = { "--", "and", "or", "xor", "nand", "nor" };
+static const char *XOP_NAMES[] = { "--", "mix", "mask", "not", "mult", "hold", "s&h", "add", "sub", "and", "or", "xor", "seed" };
+static const char *FLEX_NAMES[] = { "off", "human", "swing", "accel", "hump", "fall" };
 static const char *SRC_NAMES[2] = { "int", "ext" };
 #define SRC_COUNT 2
 
-static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A", "load bank B", "defaults" };
+static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A", "load bank B", "defaults", "edit scale 1", "edit scale 2", "edit scale 3" };
 #define SYS_ACTION_COUNT (sizeof(SYS_ACTIONS) / sizeof(SYS_ACTIONS[0]))
 
 #define P_RATIO 0
@@ -128,9 +130,20 @@ static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A"
 #define P_LGSRC 41
 #define P_IN1S 42
 #define P_IN2S 43
-#define CH_PARAM_COUNT 44
+#define P_DIVA 44
+#define P_DIVB 45
+#define P_QSRC 46
+#define P_XOP 47
+#define P_XSRC 48
+#define P_FLEX 49
+#define P_FLEXA 50
+#define P_RCH 51
+#define P_EULOOP 52
+#define P_SPROB0 53   // +16 per-step probabilities
+#define P_GQ 69
+#define CH_PARAM_COUNT 70
 
-#define MASTER_PARAM_COUNT 4
+#define MASTER_PARAM_COUNT 5
 
 static uint8_t page = 0;
 static uint8_t param_idx = 0;
@@ -147,26 +160,30 @@ static uint8_t param_idx = 0;
 // The browse cursor is a single flat index over the app's concatenated groups.
 // Indices are raw P_* values; 0xFF terminates each array.
 // ---------------------------------------------------------------------------
-enum { G_SHAPE = 0, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END = 0xFF };
+enum { G_SHAPE = 0, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END = 0xFF };
 
 static const uint8_t A_CLOCK[]  = { P_RATIO, P_PHASE, P_PROB, 0xFF };
-static const uint8_t A_EUCLID[] = { P_EUEN, P_EULEN, P_EUFILL, P_EUROT, 0xFF };
-static const uint8_t A_RANGE[]  = { P_CVMIN, P_CVMAX, P_INV, P_SLEW, 0xFF };
+static const uint8_t A_EUCLID[] = { P_EUEN, P_EULEN, P_EUFILL, P_EUROT, P_EULOOP, 0xFF };
+static const uint8_t A_FLEX[]   = { P_FLEX, P_FLEXA, 0xFF };
+static const uint8_t A_XOP[]    = { P_XOP, P_XSRC, 0xFF };
+static const uint8_t A_RANGE[]  = { P_CVMIN, P_CVMAX, P_INV, P_SLEW, P_GQ, P_SCALE, 0xFF };
 static const uint8_t A_MOD[]    = { P_IN1S, P_CVS1, P_CVSC1, P_IN2S, P_CVS2, P_CVSC2, 0xFF };
 
 // Per-mode list of groups (G_SHAPE always first; G_END terminates).
 static const uint8_t* mode_groups(uint8_t mode) {
   static const uint8_t off[]   = { G_SHAPE, G_END };
-  static const uint8_t pul[]   = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
-  static const uint8_t lfo[]   = { G_SHAPE, G_CLOCK, G_RANGE, G_MOD, G_END };
-  static const uint8_t ramp[]  = { G_SHAPE, G_CLOCK, G_RANGE, G_END };
-  static const uint8_t step[]  = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
-  static const uint8_t sh[]    = { G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
-  static const uint8_t note[]  = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
-  static const uint8_t env[]   = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
-  static const uint8_t logic[] = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
-  static const uint8_t wg[]    = { G_SHAPE, G_CLOCK, G_RANGE, G_MOD, G_END };
-  static const uint8_t rw[]    = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
+  static const uint8_t pul[]   = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
+  static const uint8_t lfo[]   = { G_SHAPE, G_CLOCK, G_RANGE, G_XOP, G_MOD, G_END };
+  static const uint8_t ramp[]  = { G_SHAPE, G_CLOCK, G_RANGE, G_XOP, G_END };
+  static const uint8_t step[]  = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
+  static const uint8_t sh[]    = { G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
+  static const uint8_t note[]  = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
+  static const uint8_t env[]   = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
+  static const uint8_t logic[] = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
+  static const uint8_t wg[]    = { G_SHAPE, G_CLOCK, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
+  static const uint8_t rw[]    = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
+  static const uint8_t dv[]    = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
+  static const uint8_t qt[]    = { G_SHAPE, G_RANGE, G_XOP, G_MOD, G_END };
   switch (mode) {
     case MODE_PULSE: return pul;
     case MODE_LFO:   return lfo;
@@ -178,6 +195,9 @@ static const uint8_t* mode_groups(uint8_t mode) {
     case MODE_LOGIC: return logic;
     case MODE_WGGLE: return wg;
     case MODE_RWALK: return rw;
+    case MODE_DIV:   return dv;
+    case MODE_QUANT: return qt;
+    case MODE_RATCHET: return pul;
     default:         return off;
   }
 }
@@ -192,6 +212,9 @@ static const uint8_t* shape_arr(uint8_t mode) {
     case MODE_LOGIC: { static const uint8_t v[] = { P_LGOP, P_LGSRC, P_WIDTH, P_DELAY, 0xFF }; return v; }
     case MODE_WGGLE: { static const uint8_t v[] = { P_WIDTH, P_SKEW, 0xFF };   return v; }
     case MODE_RWALK: { static const uint8_t v[] = { P_WIDTH, 0xFF };           return v; }
+    case MODE_DIV:   { static const uint8_t v[] = { P_DIVA, P_DIVB, P_WIDTH, P_DELAY, 0xFF }; return v; }
+    case MODE_QUANT: { static const uint8_t v[] = { P_QSRC, P_SCALE, 0xFF };   return v; }
+    case MODE_RATCHET: { static const uint8_t v[] = { P_RCH, P_WIDTH, P_DELAY, 0xFF }; return v; }
     default:         { static const uint8_t v[] = { 0xFF };                    return v; }
   }
 }
@@ -203,10 +226,12 @@ static uint8_t group_count(uint8_t code, uint8_t mode, uint8_t slen) {
   switch (code) {
     case G_SHAPE:
       if (mode == MODE_OFF)  return 0;
-      if (mode == MODE_STEP) return (uint8_t)(1 + (slen ? slen : 1));  // seq len + steps
+      if (mode == MODE_STEP) return (uint8_t)(1 + 2 * (slen ? slen : 1));  // seq len + (value,prob) per step
       return arr_len(shape_arr(mode));
     case G_CLOCK:  return arr_len(A_CLOCK);
     case G_EUCLID: return arr_len(A_EUCLID);
+    case G_FLEX:   return arr_len(A_FLEX);
+    case G_XOP:    return arr_len(A_XOP);
     case G_RANGE:  return arr_len(A_RANGE);
     case G_MOD:    return arr_len(A_MOD);
   }
@@ -216,6 +241,8 @@ static const char* group_name(uint8_t code, uint8_t mode) {
   switch (code) {
     case G_CLOCK:  return "clock";
     case G_EUCLID: return "euclid";
+    case G_FLEX:   return "flex";
+    case G_XOP:    return "cross";
     case G_RANGE:  return "range";
     case G_MOD:    return "mod";
     default:       return MODE_NAMES[mode];
@@ -225,10 +252,16 @@ static const char* group_name(uint8_t code, uint8_t mode) {
 static uint8_t group_raw(uint8_t code, uint8_t local, uint8_t mode, uint8_t slen) {
   switch (code) {
     case G_SHAPE:
-      if (mode == MODE_STEP) return (local == 0) ? P_SLEN : (uint8_t)(P_STEP0 + (local - 1));
+      if (mode == MODE_STEP) {
+        if (local == 0) return P_SLEN;
+        uint8_t s = (uint8_t)((local - 1) >> 1);        // step index
+        return ((local - 1) & 1) ? (uint8_t)(P_SPROB0 + s) : (uint8_t)(P_STEP0 + s);
+      }
       return shape_arr(mode)[local];
     case G_CLOCK:  return A_CLOCK[local];
     case G_EUCLID: return A_EUCLID[local];
+    case G_FLEX:   return A_FLEX[local];
+    case G_XOP:    return A_XOP[local];
     case G_RANGE:  return A_RANGE[local];
     case G_MOD:    return A_MOD[local];
   }
@@ -334,6 +367,12 @@ static bool enc_l_sw_handled = false;
 static bool app_menu = false;
 static uint8_t app_sel = 0;
 
+// User-scale editor: entered from the SYS page. Left knob moves the note cursor,
+// right knob toggles the note in the scale, either encoder press commits + exits.
+static bool scale_edit = false;
+static uint8_t scale_slot = 0;   // USER_SCALES index
+static uint8_t scale_note = 0;   // 0..11 cursor
+
 static uint8_t ch_of_page() { return page - 1; }
 static bool is_master() { return page == 0; }
 static bool is_sys() { return page == NUM_OUTPUTS + 1; }
@@ -355,11 +394,13 @@ static int16_t get_val(uint8_t ch, uint8_t idx) {
       case 0: return masterClock.bpm_cent;
       case 1: return masterClock.source;
       case 2: return masterClock.ext_ppqn;
+      case 3: return masterClock.swing;
       default: return masterClock.running;
     }
   }
   ChannelParams &p = channels[ch].p;
   if (idx >= P_STEP0 && idx < P_STEP0 + MAX_STEPS) return p.steps[idx - P_STEP0];
+  if (idx >= P_SPROB0 && idx < P_SPROB0 + MAX_STEPS) return p.step_prob[idx - P_SPROB0];
   switch (idx) {
     case P_RATIO: return p.ratio;
     case P_MODE: return p.mode;
@@ -376,6 +417,7 @@ static int16_t get_val(uint8_t ch, uint8_t idx) {
     case P_EULEN: return p.eucl_len;
     case P_EUFILL: return p.eucl_fill;
     case P_EUROT: return p.eucl_rot;
+    case P_EULOOP: return p.eucl_loop;
     case P_SLEN: return p.step_len;
     case P_CVS1: return p.cv_src1;
     case P_CVSC1: return p.cv_scale1;
@@ -388,6 +430,15 @@ static int16_t get_val(uint8_t ch, uint8_t idx) {
     case P_LGSRC: return p.logic_src;
     case P_IN1S: return p.cv_in1;
     case P_IN2S: return p.cv_in2;
+    case P_DIVA: return p.div_a;
+    case P_DIVB: return p.div_b;
+    case P_QSRC: return p.quant_src;
+    case P_XOP: return p.xop;
+    case P_XSRC: return p.xsrc;
+    case P_FLEX: return p.flex;
+    case P_FLEXA: return p.flex_amt;
+    case P_RCH: return p.ratchets;
+    case P_GQ: return p.gquant;
     default: return p.cv_scale2;
   }
 }
@@ -402,6 +453,7 @@ static void set_val(uint8_t ch, uint8_t idx, int32_t v) {
         break;
       }
       case 2: masterClock.ext_ppqn = constrain(v, 1, 48); break;
+      case 3: masterClock.swing = constrain(v, 0, 63); break;
       default: masterClock.running = v ? 1 : 0; break;
     }
     mark_dirty();
@@ -411,6 +463,8 @@ static void set_val(uint8_t ch, uint8_t idx, int32_t v) {
   bool touch_euclid = false;
   if (idx >= P_STEP0 && idx < P_STEP0 + MAX_STEPS) {
     p.steps[idx - P_STEP0] = constrain(v, 0, 255);
+  } else if (idx >= P_SPROB0 && idx < P_SPROB0 + MAX_STEPS) {
+    p.step_prob[idx - P_SPROB0] = constrain(v, 0, 100);
   } else switch (idx) {
     case P_RATIO: p.ratio = constrain(v, 0, RATIO_COUNT - 1); break;
     case P_MODE: p.mode = constrain(v, 0, MODE_LAST - 1); break;
@@ -429,6 +483,7 @@ static void set_val(uint8_t ch, uint8_t idx, int32_t v) {
                   touch_euclid = true; break;
     case P_EUFILL: p.eucl_fill = constrain(v, 0, p.eucl_len); touch_euclid = true; break;
     case P_EUROT: p.eucl_rot = constrain(v, 0, p.eucl_len ? p.eucl_len - 1 : 0); break;
+    case P_EULOOP: p.eucl_loop = constrain(v, 0, EUCLID_MAX_LEN); break;
     case P_SLEN: p.step_len = constrain(v, 1, MAX_STEPS); break;
     case P_CVS1: p.cv_src1 = constrain(v, 0, CVP_LAST - 1); break;
     case P_CVSC1: p.cv_scale1 = constrain(v, -128, 127); break;
@@ -441,6 +496,15 @@ static void set_val(uint8_t ch, uint8_t idx, int32_t v) {
     case P_LGSRC: p.logic_src = constrain(v, 0, NUM_OUTPUTS); break;
     case P_IN1S: p.cv_in1 = constrain(v, 0, 1 + NUM_OUTPUTS); break;
     case P_IN2S: p.cv_in2 = constrain(v, 0, 1 + NUM_OUTPUTS); break;
+    case P_DIVA: p.div_a = constrain(v, -32, 32); break;
+    case P_DIVB: p.div_b = constrain(v, -32, 32); break;
+    case P_QSRC: p.quant_src = constrain(v, 0, 1 + NUM_OUTPUTS); break;
+    case P_XOP: p.xop = constrain(v, 0, XOP_LAST - 1); break;
+    case P_XSRC: p.xsrc = constrain(v, 0, 1 + NUM_OUTPUTS); break;
+    case P_FLEX: p.flex = constrain(v, 0, FLEX_LAST - 1); break;
+    case P_FLEXA: p.flex_amt = constrain(v, 0, 255); break;
+    case P_RCH: p.ratchets = constrain(v, 1, 16); break;
+    case P_GQ: p.gquant = v ? 1 : 0; break;
     default: p.cv_scale2 = constrain(v, -128, 127); break;
   }
   if (touch_euclid) channel_rebuild_euclid(channels[ch]);
@@ -454,12 +518,17 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
       case 0: return "BPM";
       case 1: return "clock";
       case 2: return "ext ppqn";
+      case 3: return "swing";
       default: return "run";
     }
   }
   if (is_sys()) return "";
   if (idx >= P_STEP0 && idx < P_STEP0 + MAX_STEPS) {
     snprintf(buf, sizeof(buf), "step %d", idx - P_STEP0 + 1);
+    return buf;
+  }
+  if (idx >= P_SPROB0 && idx < P_SPROB0 + MAX_STEPS) {
+    snprintf(buf, sizeof(buf), "s%d prob", idx - P_SPROB0 + 1);
     return buf;
   }
   switch (idx) {
@@ -478,6 +547,7 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
     case P_EULEN: return "eu length";
     case P_EUFILL: return "eu fill";
     case P_EUROT: return "eu rot";
+    case P_EULOOP: return "eu loop";
     case P_SLEN: return "seq len";
     case P_CVS1: return "cv in 1";
     case P_CVSC1: return "cv1 scale";
@@ -490,6 +560,15 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
     case P_LGSRC: return "lg src";
     case P_IN1S: return "cv1 from";
     case P_IN2S: return "cv2 from";
+    case P_DIVA: return "div a";
+    case P_DIVB: return "div b";
+    case P_QSRC: return "q in";
+    case P_XOP: return "x op";
+    case P_XSRC: return "x src";
+    case P_FLEX: return "flex";
+    case P_FLEXA: return "flex amt";
+    case P_RCH: return "ratchets";
+    case P_GQ: return "quantise";
     default: return "cv2 scale";
   }
 }
@@ -516,11 +595,13 @@ static void fmt_val(uint8_t ch, uint8_t idx, char *buf, size_t n) {
       case 0: snprintf(buf, n, "%d.%02d", v / 100, v % 100); break;
       case 1: snprintf(buf, n, "%s", SRC_NAMES[v % SRC_COUNT]); break;
       case 2: snprintf(buf, n, "%d", v); break;
+      case 3: snprintf(buf, n, v ? "%d%%" : "off", (int16_t)v * 100 / 63); break;
       default: snprintf(buf, n, v ? "run" : "stop"); break;
     }
     return;
   }
   ChannelParams &p = channels[ch].p;
+  if (idx >= P_SPROB0 && idx < P_SPROB0 + MAX_STEPS) { snprintf(buf, n, "%d%%", v); return; }
   switch (idx) {
     case P_RATIO: snprintf(buf, n, "%s", RATIO_TABLE[p.ratio].label); break;
     case P_MODE: snprintf(buf, n, "%s", MODE_NAMES[p.mode]); break;
@@ -528,7 +609,7 @@ static void fmt_val(uint8_t ch, uint8_t idx, char *buf, size_t n) {
     case P_WIDTH: case P_SKEW: case P_PHASE: case P_DELAY: snprintf(buf, n, "%d", v); break;
     case P_CVMIN: case P_CVMAX: snprintf(buf, n, "%dmV", v); break;
     case P_PROB: snprintf(buf, n, "%d%%", v); break;
-    case P_INV: case P_EUEN: snprintf(buf, n, v ? "on" : "off"); break;
+    case P_INV: case P_EUEN: case P_GQ: snprintf(buf, n, v ? "on" : "off"); break;
     case P_CVS1: case P_CVS2: snprintf(buf, n, "%s", CVP_NAMES[v]); break;
     case P_CVSC1: case P_CVSC2: snprintf(buf, n, "%d", v); break;
     case P_SLEW: snprintf(buf, n, v ? "%dms" : "off", v * 8); break;
@@ -536,6 +617,20 @@ static void fmt_val(uint8_t ch, uint8_t idx, char *buf, size_t n) {
     case P_ENV_A: case P_ENV_D: snprintf(buf, n, "%dms", v * 32); break;
     case P_LGOP: snprintf(buf, n, "%s", LOGIC_NAMES[v]); break;
     case P_LGSRC: if (v) snprintf(buf, n, "out%d", v); else snprintf(buf, n, "--"); break;
+    case P_DIVA: case P_DIVB:
+      if (v > 1) snprintf(buf, n, "/%d", v);
+      else if (v < -1) snprintf(buf, n, "x%d", -v);
+      else snprintf(buf, n, "1:1");
+      break;
+    case P_QSRC: case P_XSRC:
+      if (v == 0) snprintf(buf, n, "CV1");
+      else if (v == 1) snprintf(buf, n, "CV2");
+      else snprintf(buf, n, "out%d", v - 1);
+      break;
+    case P_XOP: snprintf(buf, n, "%s", XOP_NAMES[v]); break;
+    case P_FLEX: snprintf(buf, n, "%s", FLEX_NAMES[v]); break;
+    case P_RCH: snprintf(buf, n, "%dx", v ? v : 1); break;
+    case P_EULOOP: snprintf(buf, n, v ? "%d" : "off", v); break;
     case P_IN1S: case P_IN2S:
       if (v == 0) snprintf(buf, n, "CV1");
       else if (v == 1) snprintf(buf, n, "CV2");
@@ -552,13 +647,19 @@ static void do_action(uint8_t idx) {
     case 1: capture_state(blob); storage_save(SLOT_BANK2, blob); break;
     case 2: if (storage_load(SLOT_BANK1, blob)) restore_state(blob); break;
     case 3: if (storage_load(SLOT_BANK2, blob)) restore_state(blob); break;
-    default:
+    case 4:
       masterClock.bpm_cent = 12000;
       masterClock.source = 0;
       masterClock.ext_ppqn = 24;
       masterClock.running = true;
       channels_init();
       break;
+    case 5: case 6: case 7:
+      scale_slot = idx - 5;
+      scale_note = 0;
+      scale_edit = true;
+      return;   // no mark_dirty; edit commits on exit
+    default: return;
   }
   mark_dirty();
 }
@@ -658,6 +759,20 @@ void ui_service() {
   btn_b2.poll(PIN_BTN_B2);
   btn_b1.poll(PIN_BTN_B1);
 
+  if (scale_edit) {
+    // Left = move note cursor, right = toggle the note on/off in this scale.
+    int8_t dl = enc_l.read();
+    scale_note = (uint8_t)(((int16_t)scale_note + dl + 12) % 12);
+    if (enc_r.read()) USER_SCALES[scale_slot] ^= (1u << scale_note);
+    // Commit + exit on either encoder press or a panel button.
+    if (btn_enc_sw.released() || btn_enc_r_sw.released() ||
+        btn_b2.released() || btn_b1.released()) {
+      scale_edit = false;
+      mark_dirty();
+    }
+    return;
+  }
+
   if (app_menu) {
     // Either encoder scrolls the mode list (wrapping).
     int8_t d = enc_l.read();
@@ -728,6 +843,23 @@ void ui_draw() {
   uint8_t ch = is_master() ? 0 : ch_of_page();
   char buf[20];
 
+  if (scale_edit) {
+    // 12 note cells across the screen; filled = in scale, box = cursor.
+    gfx->printf("SCALE USER%d", scale_slot + 1);
+    const int16_t cw = 10, cy = 24;
+    for (uint8_t n = 0; n < 12; n++) {
+      int16_t x = 2 + n * cw;
+      bool on = (USER_SCALES[scale_slot] >> n) & 1;
+      if (on) gfx->fillRect(x, cy, cw - 2, 20, PNC_WHITE);
+      else gfx->drawRect(x, cy, cw - 2, 20, PNC_WHITE);
+      if (n == scale_note) gfx->drawRect(x - 1, cy - 1, cw, 22, PNC_WHITE);
+    }
+    gfx->setCursor(2, 50);
+    gfx->printf("L:note R:toggle push:done");
+    oled_flush();
+    return;
+  }
+
   if (is_master()) {
     uint16_t shown = masterClock.bpm_cent;
     if (masterClock.source && masterClock.measured_bpm_cent()) shown = masterClock.measured_bpm_cent();
@@ -744,10 +876,12 @@ void ui_draw() {
       gfx->printf("PICK APP OUT%d", ch + 1);
     } else {
       // Single header label: the current group name, which defaults to the mode
-      // name on shape pages. Showing both would collide for long names like
-      // "woggle" (mode text runs to x=66, group text starts near x=51).
+      // name on shape pages. Truncated so "OUT%d " + label can never reach the
+      // meter column (each glyph is 6px wide, meters start at METR_X).
       const char *grp = app_param_group(gm, param_idx, channels[ch].p.step_len);
-      gfx->printf("OUT%d %s", ch + 1, grp);
+      int16_t avail = (METR_X - 1) / 6 - 5;   // chars left after "OUT%d "
+      if (avail < 0) avail = 0;
+      gfx->printf("OUT%d %.*s", ch + 1, avail, grp);
     }
   }
 
@@ -791,7 +925,7 @@ void ui_draw() {
   // a self-contained output meter on the RIGHT (x >= METR_X). The two zones never
   // overlap: text/highlights are clipped to the left column, and the meter box
   // plus its gate strip live entirely inside the right column's rows 9..62.
-  const uint8_t text_w = METR_X - 2;   // selectable text strip width (2px gutter)
+  const uint8_t text_w = METR_X - 4;   // selectable text strip width (4px gutter before meters)
   uint8_t cnt = param_count();
   const uint8_t rows = 3;
   uint8_t top = 0;

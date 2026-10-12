@@ -4,7 +4,7 @@
 #include <string.h>
 
 #define STORE_MAGIC   0x504B5731u
-#define STORE_VERSION 3u
+#define STORE_VERSION 8u
 
 static const uint32_t SLOT_STRIDE = 512;
 static const uint32_t SLOT_OFFSET[3] = { 0, SLOT_STRIDE, 2 * SLOT_STRIDE };
@@ -34,6 +34,8 @@ void capture_state(StoreBlob &blob) {
   blob.master.source = masterClock.source;
   blob.master.ext_ppqn = masterClock.ext_ppqn;
   blob.master.running = masterClock.running ? 1 : 0;
+  blob.master.swing = masterClock.swing;
+  for (uint8_t u = 0; u < USER_SCALE_COUNT; u++) blob.master.user_scales[u] = USER_SCALES[u];
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) blob.ch[i] = channels[i].p;
   blob.crc = crc32((const uint8_t *)&blob.master, PAYLOAD_LEN);
 }
@@ -43,6 +45,8 @@ void restore_state(const StoreBlob &blob) {
   masterClock.source = blob.master.source;
   masterClock.ext_ppqn = blob.master.ext_ppqn;
   masterClock.running = blob.master.running;
+  masterClock.swing = constrain((int)blob.master.swing, 0, 63);
+  for (uint8_t u = 0; u < USER_SCALE_COUNT; u++) USER_SCALES[u] = blob.master.user_scales[u];
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     channels[i].p = blob.ch[i];
     channel_rebuild_euclid(channels[i]);

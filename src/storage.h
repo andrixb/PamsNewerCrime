@@ -8,7 +8,8 @@ struct MasterPersist {
   uint8_t source;
   uint8_t ext_ppqn;
   uint8_t running;
-  uint8_t reserved[3];
+  uint8_t swing;
+  uint16_t user_scales[USER_SCALE_COUNT];
 };
 
 struct StoreBlob {
