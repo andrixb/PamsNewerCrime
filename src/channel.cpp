@@ -402,7 +402,9 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
         uint32_t st = span / 83;           // semitones available in the window
         if (st < 1) st = 1;
         int rv = resolve_in(p.quant_src, cv1, cv2);
+#if CV_BIPOLAR
         if (p.quant_src < 2) rv += 128;    // bipolar jacks: mid-scale -> 0..255
+#endif
         rv = constrain(rv, 0, 255);
         int pos = (int)((uint32_t)rv * st / 255);
         int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT));

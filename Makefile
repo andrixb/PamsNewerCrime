@@ -12,7 +12,7 @@ TEST_SRC := test/test_main.cpp test/mock_hw.cpp \
 TESTFLAGS := -std=gnu++17 -Wall -Wextra -Wno-unused-function \
              -Itest/mock -Isrc -DNUM_OUTPUTS=4
 
-.PHONY: build flash monitor test clean size $(ENV)
+.PHONY: build flash monitor test clean size dac-selftest $(ENV)
 
 build:            ## compile the default env ($(ENV))
 	$(PIO) run -e $(ENV)
@@ -27,6 +27,10 @@ test:             ## native unit tests (mocked Arduino/EEPROM/DAC)
 	@mkdir -p build
 	$(CXX) $(TESTFLAGS) $(TEST_SRC) -o $(TEST_BIN)
 	@./$(TEST_BIN)
+
+dac-selftest:     ## build+flash a boot-time CV bring-up sweep (0->5->10->0 V per out)
+	PLATFORMIO_BUILD_FLAGS="-DPNC_DAC_SELFTEST=1" $(PIO) run -e $(ENV) -t upload
+	@echo "now: make monitor  -> watch 'DAC self-test', probe CV jacks with a meter"
 
 size:             ## flash/RAM usage report
 	$(PIO) run -e $(ENV) -t size

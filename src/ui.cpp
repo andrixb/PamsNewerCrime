@@ -72,9 +72,15 @@ public:
 private:
   uint8_t fb[1024];
   uint8_t last[1024];
+  // The OLED shares the bus with the DAC8565, which runs transactions at
+  // 12 MHz. SH1106 panels glitch above ~4-8 MHz (corrupted bytes = random
+  // dots/lines), so every OLED burst must carry its own SPISettings instead
+  // of inheriting whatever clock the DAC left on the peripheral.
   void xfer(bool data, const uint8_t *b, size_t n) {
+    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
     digitalWrite(PIN_OLED_DC, data ? HIGH : LOW);
     for (size_t i = 0; i < n; i++) SPI.transfer(b[i]);
+    SPI.endTransaction();
   }
 };
 static PncSpiOled oled_spi;

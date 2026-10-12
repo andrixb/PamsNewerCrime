@@ -22,7 +22,7 @@
 //   SH1106 OLED on SPI (CS=8 DC=6 RST=7); DAC8565 quad on the same SPI
 //   (CS=10 RST=9), 0-10 V outputs; left encoder A=22 B=21 push=23, right encoder
 //   A=16 B=15 push=14, top button = 5, bottom button = 4; clock = TR1 (pin 0,
-//   active low); CV1/CV2 = A3/A4, bipolar. Pin map verified against Phazerville.
+//   active low); CV1/CV2 = A5/A4 on the T4 (see below), unipolar 0-10V, inverted.
 // ---------------------------------------------------------------------------
 
 #define IS_O_C 1
@@ -32,7 +32,7 @@
 #endif
 #define DAC_MAX_MV        10000
 #define DAC_FULL_SCALE_CV 10000
-#define CV_BIPOLAR        1
+#define CV_BIPOLAR        0
 #define TR_ACTIVE_LOW     1
 
 #define PIN_DAC_CS        10
@@ -51,7 +51,31 @@
 #define PIN_BTN_B1 4      // O_C bottom button
 #define PIN_CK_IN 0       // TR1
 
-#define PIN_CV_IN1 A3     // CV1
+// Teensy 4.0 in O_C hardware: the jack-to-ADC mapping is NOT the LC's A0..A3.
+// Phazerville OC_ADC.cpp (Init_Teensy4_builtin_ADC): the CV jacks land on
+// A5(CV1) A4(CV2) A6(CV3) A3(CV4). CV1 is A5 here, NOT A3 (that is CV4!).
+#define PIN_CV_IN1 A5     // CV1
 #define PIN_CV_IN2 A4     // CV2
 
+// Measured on this board with the self-test (OUT1 patched into CV1):
+//   jack 0V -> ADC raw ~4095, 5V -> ~2220, 10V -> ~170.
+// The CV input stage inverts and is UNIPOLAR 0..10V (not the O_C bipolar
+// input): firmware flips the raw ADC (4095 - raw) in main.cpp and CV_BIPOLAR=0
+// makes modulation read 0..255 = 0..10V.
+#define PNC_CV_INVERT 1
+
 #define DISPLAY_KIND "OC-SPI SH1106"
+
+// Opt-in CV output bring-up test: build with -DPNC_DAC_SELFTEST=1 to sweep each
+// output 0->5->10->0 V at boot (before the engine takes the bus) and log the
+// exact SPI bytes. Off by default; normal firmware is unchanged.
+#ifndef PNC_DAC_SELFTEST
+#define PNC_DAC_SELFTEST 0
+#endif
+
+// Opt-in runtime CV telemetry: build with -DPNC_LOG_CV=1 to print the CV-input
+// ADC values alongside the four commanded output voltages every 250 ms. Patch
+// an output into CV1 and watch cv1 track out1 to prove the DAC path is live.
+#ifndef PNC_LOG_CV
+#define PNC_LOG_CV 0
+#endif

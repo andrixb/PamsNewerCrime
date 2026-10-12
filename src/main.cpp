@@ -22,6 +22,11 @@ static void control_tick() {
   if ((tick_count % 8) == 0) {
     uint16_t r1 = analogRead(PIN_CV_IN1);
     uint16_t r2 = analogRead(PIN_CV_IN2);
+#if PNC_CV_INVERT
+    // This board's CV input stage inverts (measured: 0V -> ~4095, 10V -> ~170).
+    r1 = 4095 - r1;
+    r2 = 4095 - r2;
+#endif
     cv1_f = cv1_f - (cv1_f >> 2) + (r1 >> 2);
     cv2_f = cv2_f - (cv2_f >> 2) + (r2 >> 2);
   }
@@ -57,11 +62,36 @@ void setup() {
   ctrl_timer.begin(control_tick, (uint32_t)(1000000 / CONTROL_RATE_HZ));
   ctrl_timer.priority(16);
   Serial.println("pnc: setup done");
+#if PNC_DAC_SELFTEST
+  // Block the timer context is not yet contended: ctrl_timer runs at prio 16,
+  // but the self-test just writes the DAC directly; the engine also writes it,
+  // so to get a clean sweep we briefly disable the ISR by using the highest
+  // priority and re-arming after.
+  ctrl_timer.end();
+  dac_selftest();
+  ctrl_timer.begin(control_tick, (uint32_t)(1000000 / CONTROL_RATE_HZ));
+  ctrl_timer.priority(16);
+  Serial.println("pnc: self-test done, engine resumes");
+#endif
 }
 
 static uint32_t last_beat_ms = 0;
+static uint32_t last_cvlog_ms = 0;
 
 void loop() {
+#if PNC_LOG_CV
+  // Periodic ADC-vs-output telemetry for CV bring-up: if an output is patched
+  // into CV1, cv1 should track out1 as the engine runs.
+  uint32_t cm = millis();
+  if (cm - last_cvlog_ms > 250) {
+    last_cvlog_ms = cm;
+    Serial.printf("cv: ADC1=%4u ADC2=%4u | out(mV) %4u %4u %4u %4u | run=%d\n",
+                  cv1_f, cv2_f,
+                  channels[0].out_mv, channels[1].out_mv,
+                  channels[2].out_mv, channels[3].out_mv,
+                  masterClock.running);
+  }
+#endif
   uint32_t beat = millis();
   if (beat - last_beat_ms > 5000) {
     last_beat_ms = beat;
