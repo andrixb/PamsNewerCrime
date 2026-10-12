@@ -72,22 +72,28 @@ Both knobs and both buttons are wired and live:
   turning = fine steps for BPM / voltage)
 - **Left encoder** — select the parameter; rolling past either end wraps into
   the neighbouring page
-- **Left encoder push** — tap = start/stop master clock (on the SYS page: run
-  the highlighted action); hold = reset all channel phases
-- **Right encoder push** — tap = next parameter (SYS page: run the highlighted action)
+- **Left encoder push** — tap = start/stop master clock (SYS page: run the
+  highlighted action); **hold = open the app menu**
+- **Right encoder push** — tap = next parameter; hold = reset all channel phases
 - **Top button** — next page · **Bottom button** — previous page
 - Pages: `M` (master), `OUT1..N`, `SYS`
 - Master page params: `BPM`, `clock` (int / ext), `ext ppqn`, `run`
 
-Channel page params, in order: `ratio`, `mode`, `wave`, `width`, `skew`, `cv min`,
-`cv max`, `invert`, `phase`, `delay`, `prob`, `euclid`, `eu length`, `eu fill`,
-`eu rot`, `seq len`, `step 1..16`, `cv in 1` + `cv1 scale`, `cv in 2` + `cv2 scale`
-(modulation *destinations*), `lag`, `scale`, `attack`, `decay`, `logic`, `lg src`,
-`cv1 from`, `cv2 from` (modulation *sources*: CV1 / CV2 / out1..outN).
-Parameters not used by the current mode are still shown but have no effect
-(e.g. `scale` only matters in `note` mode, `skew`/`width` = chaos/speed in `woggle`).
+### The app menu
 
-SYS page: save/load bank A and B, restore defaults (rotate to select, press to execute).
+Hold the **left encoder** on any output page to open the app menu — a list of
+the modes (`off, pulse, LFO, ramp, step, S&H, note, env, logic, woggle, rwalk`),
+one per output like a Phazerville "app". Rotate either encoder to scroll, then:
+
+- **Right push** = assign the highlighted app to this output and close
+- **Left push** or either panel button = cancel
+
+Once assigned, the output page shows **only that app's parameters** (plus the
+shared output/modulation block: `cv min/max`, `invert`, `cv in 1/2` + scales,
+`cv1/cv2 from`, `lag`), instead of the old flat 44-item list. For example
+`LFO` shows ratio / wave / skew / phase / prob + the mod block; `env` shows
+ratio / attack / decay / prob + the mod block. SYS page: save/load bank A and B,
+restore defaults.
 
 ## Web flasher
 

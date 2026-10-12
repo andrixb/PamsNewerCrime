@@ -132,6 +132,89 @@ static uint8_t page = 0;
 static uint8_t param_idx = 0;
 
 // ---------------------------------------------------------------------------
+// App menu (Phazerville-style). Each channel's "app" is its mode; assigning an
+// app makes only that app's parameters browsable, instead of the flat 44-item
+// list. Each table below is a list of raw P_* indices the mode actually uses,
+// followed by a shared "modulation" block (CV-in destinations + sources + lag)
+// that applies to every live mode. 0xFF terminates each list.
+// ---------------------------------------------------------------------------
+static const uint8_t MOD_BLOCK[] = { P_CVMIN, P_CVMAX, P_INV, P_CVS1, P_CVSC1, P_CVS2, P_CVSC2, P_IN1S, P_IN2S, P_SLEW, 0xFF };
+
+static const uint8_t* app_params(uint8_t mode, uint8_t *out_count) {
+  static const uint8_t A_OFF[]   = { 0xFF };
+  static const uint8_t A_PULSE[] = { P_RATIO, P_WIDTH, P_DELAY, P_PHASE, P_PROB,
+                                     P_EUEN, P_EULEN, P_EUFILL, P_EUROT, 0xFF };
+  static const uint8_t A_LFO[]   = { P_RATIO, P_WAVE, P_SKEW, P_PHASE, P_PROB, 0xFF };
+  static const uint8_t A_RAMP[]  = { P_RATIO, P_SKEW, P_PHASE, P_PROB, 0xFF };
+  static const uint8_t A_STEP[]  = { P_RATIO, P_SLEN, P_STEP0, 0xFF };
+  static const uint8_t A_SH[]    = { P_RATIO, P_PHASE, P_PROB, 0xFF };
+  static const uint8_t A_NOTE[]  = { P_RATIO, P_SCALE, P_PHASE, P_PROB, 0xFF };
+  static const uint8_t A_ENV[]   = { P_RATIO, P_ENV_A, P_ENV_D, P_PROB, 0xFF };
+  static const uint8_t A_LOGIC[] = { P_RATIO, P_LGOP, P_LGSRC, P_WIDTH, P_DELAY, P_PHASE, P_PROB,
+                                     P_EUEN, P_EULEN, P_EUFILL, P_EUROT, 0xFF };
+  static const uint8_t A_WG[]    = { P_RATIO, P_WIDTH, P_SKEW, P_PHASE, 0xFF };
+  static const uint8_t A_RW[]    = { P_RATIO, P_WIDTH, P_PROB, 0xFF };
+
+  const uint8_t *hdr;
+  switch (mode) {
+    case MODE_PULSE: hdr = A_PULSE; break;
+    case MODE_LFO:   hdr = A_LFO;   break;
+    case MODE_RAMP:  hdr = A_RAMP;  break;
+    case MODE_STEP:  hdr = A_STEP;  break;
+    case MODE_SH:    hdr = A_SH;    break;
+    case MODE_NOTE:  hdr = A_NOTE;  break;
+    case MODE_ENV:   hdr = A_ENV;   break;
+    case MODE_LOGIC: hdr = A_LOGIC; break;
+    case MODE_WGGLE: hdr = A_WG;    break;
+    case MODE_RWALK: hdr = A_RW;    break;
+    default:         hdr = A_OFF;   break;
+  }
+  uint8_t n = 0;
+  while (hdr[n] != 0xFF) n++;
+  if (mode != MODE_OFF) {
+    uint8_t m = 0;
+    while (MOD_BLOCK[m] != 0xFF) m++;
+    n += m;
+  }
+  if (out_count) *out_count = n;
+  return hdr;
+}
+
+// Flattened param list for the current channel page (app header + mod block +
+// the 16 steps, since A_STEP only lists P_STEP0 as the anchor). Indices are
+// relative to the app's own view; step views expand P_STEP0 into P_STEP0..15.
+static uint8_t app_param_at(uint8_t mode, uint8_t pos, uint8_t slen) {
+  uint8_t count;
+  const uint8_t *hdr = app_params(mode, &count);
+  uint8_t modn = 0;
+  while (MOD_BLOCK[modn] != 0xFF) modn++;
+  uint8_t hdrlen = (mode == MODE_OFF) ? count : (uint8_t)(count - modn);
+
+  // Steps mode: header up to P_STEP0, then step_len steps, then mod block.
+  if (mode == MODE_STEP) {
+    uint8_t base = 2;  // ratio, seq len  (P_SLEN anchors steps)
+    uint8_t steps = slen ? slen : 1;
+    if (pos < base) return hdr[pos];
+    if (pos < base + steps) return P_STEP0 + (pos - base);
+    return MOD_BLOCK[pos - base - steps];
+  }
+  if (pos < hdrlen) return hdr[pos];
+  return MOD_BLOCK[pos - hdrlen];
+}
+
+static uint8_t chan_param_count(uint8_t mode, uint8_t slen) {
+  if (mode == MODE_OFF) return 0;
+  uint8_t count;
+  app_params(mode, &count);
+  uint8_t modn = 0;
+  while (MOD_BLOCK[modn] != 0xFF) modn++;
+  uint8_t hdrlen = (uint8_t)(count - modn);
+  if (mode == MODE_STEP) return 2 + (slen ? slen : 1) + modn;
+  return hdrlen + modn;
+}
+
+
+// ---------------------------------------------------------------------------
 // Encoder + button decoding. Buttons use the Phazerville 7-bit rolling shift
 // (UI::Button<> in ui_button.h): 0x80 = just pressed, 0x7f = just released,
 // 0x00 = held — debounced for free at the 1 kHz tick.
@@ -192,12 +275,28 @@ static PhzButton btn_enc_sw, btn_b2, btn_enc_r_sw, btn_b1;
 static uint32_t enc_sw_down_tick = 0;
 static uint32_t enc_r_sw_down_tick = 0;
 static bool enc_r_sw_handled = false;
+static bool enc_l_sw_handled = false;
 #define kLongPressTicks 500u
+
+// App-menu state. When app_menu is true, the encoders + push drive the mode
+// picker instead of normal param/value browsing. app_sel is the highlighted mode.
+static bool app_menu = false;
+static uint8_t app_sel = 0;
 
 static uint8_t ch_of_page() { return page - 1; }
 static bool is_master() { return page == 0; }
 static bool is_sys() { return page == NUM_OUTPUTS + 1; }
-static uint8_t param_count() { return is_master() ? MASTER_PARAM_COUNT : (is_sys() ? SYS_ACTION_COUNT : CH_PARAM_COUNT); }
+static bool is_chan() { return !is_master() && !is_sys(); }
+
+// Raw P_* index for a browsable position on the current channel page.
+static uint8_t cur_slen() { return channels[ch_of_page()].p.step_len; }
+static uint8_t raw_idx(uint8_t pos) { return app_param_at(channels[ch_of_page()].p.mode, pos, cur_slen()); }
+
+static uint8_t param_count() {
+  if (is_master()) return MASTER_PARAM_COUNT;
+  if (is_sys()) return SYS_ACTION_COUNT;
+  return chan_param_count(channels[ch_of_page()].p.mode, cur_slen());
+}
 
 static int16_t get_val(uint8_t ch, uint8_t idx) {
   if (is_master()) {
@@ -433,15 +532,18 @@ void ui_init() {
   gfx->cp437(true);
 }
 
+static uint8_t browsable_raw() { return is_chan() ? raw_idx(param_idx) : param_idx; }
+
 static void adjust(int8_t d) {
-  if (is_sys()) return;
+  if (is_sys() || app_menu) return;
   uint8_t ch = is_master() ? 0 : ch_of_page();
-  int32_t v = get_val(ch, param_idx);
+  uint8_t raw = browsable_raw();
+  int32_t v = get_val(ch, raw);
   int32_t step = 1;
-  if (is_master() && param_idx == 0) step = digitalRead(PIN_ENC_R_SW) == LOW ? 25 : 100;
-  else if (!is_master() && (param_idx == P_CVMIN || param_idx == P_CVMAX))
+  if (is_master() && raw == 0) step = digitalRead(PIN_ENC_R_SW) == LOW ? 25 : 100;
+  else if (is_chan() && (raw == P_CVMIN || raw == P_CVMAX))
     step = digitalRead(PIN_ENC_R_SW) == LOW ? 16 : 128;
-  set_val(ch, param_idx, v + d * step);
+  set_val(ch, raw, v + d * step);
 }
 
 static void page_next() {
@@ -469,14 +571,15 @@ static void select_rel(int8_t d) {
   else param_idx = n;
 }
 
-// Poll all encoder + button pins once per 1 kHz tick, exactly like Phazerville's
-// UI::Encoder::Poll / UI::Button::Poll feeding ui.Poll() at OC_UI_TIMER_RATE.
+// Poll all encoder + button pins once per 1 kHz tick (Phazerville UI::Poll model).
 //
 // O_C dual-knob scheme:
 //   RIGHT turn = edit selected value (hold RIGHT push = fine steps, live in adjust())
 //   LEFT  turn = select param / wrap into pages
-//   RIGHT push tap = next param (or execute highlighted action on SYS page)
-//   LEFT  push tap = start/stop clock (or SYS execute); hold = reset phases
+//   RIGHT push: tap = next param; hold = reset all channel phases
+//   LEFT  push: tap = start/stop master clock; hold = open the APP menu
+//   APP menu open: LEFT/RIGHT turn scroll modes, RIGHT push = assign+close,
+//                  LEFT push or either panel button = cancel
 //   TOP button = next page, BOTTOM button = prev page
 void ui_service() {
   ui_ticks++;
@@ -487,6 +590,24 @@ void ui_service() {
   btn_enc_r_sw.poll(PIN_ENC_R_SW);
   btn_b2.poll(PIN_BTN_B2);
   btn_b1.poll(PIN_BTN_B1);
+
+  if (app_menu) {
+    // Both encoders scroll the mode list; wrap around.
+    int8_t d = enc_l.read();
+    d += enc_r.read();
+    while (d > 0) { app_sel = (app_sel + 1) % MODE_LAST; d--; }
+    while (d < 0) { app_sel = (app_sel + MODE_LAST - 1) % MODE_LAST; d++; }
+    // Assign: RIGHT push tap.
+    if (btn_enc_r_sw.released()) {
+      channels[ch_of_page()].p.mode = app_sel;
+      mark_dirty();
+      app_menu = false;
+      param_idx = 0;
+    }
+    // Cancel: LEFT push tap, or either panel button.
+    if (btn_enc_sw.released() || btn_b2.released() || btn_b1.released()) app_menu = false;
+    return;
+  }
 
   // RIGHT encoder = edit the selected value. Its A/B phase is wired opposite to
   // the left knob, so negate it: clockwise increases, counter-clockwise decreases.
@@ -499,19 +620,24 @@ void ui_service() {
   while (dl > 0) { select_rel(1); dl--; }
   while (dl < 0) { select_rel(-1); dl++; }
 
-  // RIGHT push: fine step is read live in adjust(); tap = next param (SYS: execute).
-  if (btn_enc_r_sw.just_pressed()) enc_sw_down_tick = ui_ticks;
-  else if (btn_enc_r_sw.released()) {
+  // RIGHT push: fine step is read live in adjust(); tap = next param; hold = reset.
+  if (btn_enc_r_sw.just_pressed()) { enc_sw_down_tick = ui_ticks; enc_r_sw_handled = false; }
+  else if (btn_enc_r_sw.pressed() && !enc_r_sw_handled
+           && ui_ticks - enc_sw_down_tick == kLongPressTicks) {
+    channels_reset(); enc_r_sw_handled = true;
+  } else if (btn_enc_r_sw.released() && !enc_r_sw_handled) {
     if (is_sys()) pending_action = param_idx;
-    else if (ui_ticks - enc_sw_down_tick < kLongPressTicks) param_idx = (param_idx + 1) % param_count();
+    else if (is_chan()) param_idx = (param_idx + 1) % param_count();
   }
 
-  // LEFT push: tap = run/stop (SYS: execute), hold = reset phases.
-  if (btn_enc_sw.just_pressed()) { enc_r_sw_down_tick = ui_ticks; enc_r_sw_handled = false; }
-  else if (btn_enc_sw.pressed() && !enc_r_sw_handled
-           && ui_ticks - enc_r_sw_down_tick == kLongPressTicks && !is_sys()) {
-    channels_reset(); enc_r_sw_handled = true;
-  } else if (btn_enc_sw.released() && !enc_r_sw_handled) {
+  // LEFT push: tap = run/stop; hold = open the app menu (channel pages only).
+  if (btn_enc_sw.just_pressed()) { enc_r_sw_down_tick = ui_ticks; enc_l_sw_handled = false; }
+  else if (btn_enc_sw.pressed() && !enc_l_sw_handled
+           && ui_ticks - enc_r_sw_down_tick == kLongPressTicks && is_chan()) {
+    app_sel = channels[ch_of_page()].p.mode;
+    app_menu = true;
+    enc_l_sw_handled = true;
+  } else if (btn_enc_sw.released() && !enc_l_sw_handled) {
     if (is_sys()) pending_action = param_idx;
     else { masterClock.running = !masterClock.running; mark_dirty(); }
   }
@@ -519,6 +645,9 @@ void ui_service() {
   // Two buttons: top = next page, bottom = prev page.
   if (btn_b2.released()) page_next();
   if (btn_b1.released()) page_prev();
+
+  // step_len edits can shrink the list; keep the cursor in range.
+  if (is_chan() && param_idx >= param_count()) param_idx = param_count() ? param_count() - 1 : 0;
 }
 
 void ui_draw() {
@@ -541,8 +670,25 @@ void ui_draw() {
     gfx->printf("SYS");
   } else {
     gfx->setCursor(0, 0);
-    gfx->printf("OUT%d %d.%02d %s", ch + 1, masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
-                masterClock.running ? ">" : "||");
+    gfx->printf("OUT%d %s", ch + 1, MODE_NAMES[channels[ch].p.mode]);
+    if (app_menu) {
+      gfx->setCursor(96, 0);
+      gfx->printf("[%d]", ch + 1);
+      const uint8_t rows = 7;                 // 6px rows: y 12..48, fits under the bars
+      uint8_t top = 0;
+      if (app_sel >= rows - 1) top = app_sel >= MODE_LAST - 1 ? MODE_LAST - rows : app_sel - 1;
+      for (uint8_t r = 0; r < rows; r++) {
+        uint8_t m = top + r;
+        if (m >= MODE_LAST) break;
+        int16_t y = 12 + r * 6;
+        if (m == app_sel) { gfx->fillRect(0, y - 1, 128, 6, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
+        gfx->setCursor(2, y);
+        gfx->printf("%s", MODE_NAMES[m]);
+        if (m == app_sel) gfx->setTextColor(PNC_WHITE);
+      }
+      oled_flush();
+      return;
+    }
   }
 
   if (is_sys()) {
@@ -553,6 +699,17 @@ void ui_draw() {
       gfx->printf("%s", SYS_ACTIONS[i]);
       if (i == param_idx) gfx->setTextColor(PNC_WHITE);
     }
+  } else if (is_master()) {
+    uint8_t cnt = param_count();
+    for (uint8_t i = 0; i < cnt; i++) {
+      int16_t y = 12 + i * 14;
+      if (i == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
+      gfx->setCursor(0, y);
+      gfx->printf("%-9s", label_of(ch, i));
+      fmt_val(ch, i, buf, sizeof(buf));
+      gfx->printf("%s", buf);
+      if (i == param_idx) gfx->setTextColor(PNC_WHITE);
+    }
   } else {
     uint8_t cnt = param_count();
     const uint8_t rows = 3;
@@ -561,15 +718,16 @@ void ui_draw() {
       if (param_idx >= rows - 1) top = param_idx >= cnt - 1 ? cnt - rows : param_idx - 1;
     }
     for (uint8_t r = 0; r < rows; r++) {
-      uint8_t i = top + r;
-      if (i >= cnt) break;
+      uint8_t i_pos = top + r;
+      if (i_pos >= cnt) break;
+      uint8_t raw = raw_idx(i_pos);
       int16_t y = 12 + r * 14;
-      if (i == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
+      if (i_pos == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
       gfx->setCursor(0, y);
-      gfx->printf("%-9s", label_of(ch, i));
-      fmt_val(ch, i, buf, sizeof(buf));
+      gfx->printf("%-9s", label_of(ch, raw));
+      fmt_val(ch, raw, buf, sizeof(buf));
       gfx->printf("%s", buf);
-      if (i == param_idx) gfx->setTextColor(PNC_WHITE);
+      if (i_pos == param_idx) gfx->setTextColor(PNC_WHITE);
     }
   }
 
