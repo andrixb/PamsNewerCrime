@@ -68,6 +68,21 @@ Other pins:
 
 SYS page: save/load bank A and B, restore defaults (rotate to select, press to execute).
 
+## Web flasher
+
+`docs/index.html` is a zero-install browser flasher (WebHID + halfkdf protocol,
+same as Teensy Loader). Flash straight from GitHub Pages:
+
+1. Push a tag (`v0.1.0`) — CI builds both hexes and attaches them to a GitHub release.
+2. Enable Pages once: repo **Settings -> Pages -> Source: GitHub Actions** is not
+   needed; use **Deploy from a branch / main / /docs**.
+3. Open `https://andrixb.github.io/Workout-Time/`, hold the Teensy program button
+   ~4 s so the bootloader (16c0:0478) appears, pick the release hex, Flash.
+
+Requirements: Chrome/Edge/Brave over HTTPS (WebHID is not available in
+Firefox/Safari or from `file://`). Works with any Teensy 4.0/4.1 board, also for
+other Teensy sketches.
+
 ## Building
 
 PlatformIO (recommended):

@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workout-Time web flasher (Teensy 4.0 / 4.1)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-monospace, "SF Mono", Menlo, monospace; background:#101418; color:#d8dee6; margin:0; padding:2rem 1rem; }
+  .wrap { max-width: 760px; margin:0 auto; }
+  h1 { font-size:1.3rem; margin-top:0; }
+  h2 { font-size:1rem; margin:1.4rem 0 .4rem; color:#8fd3a0; }
+  .card { background:#181f26; border:1px solid #2a3440; border-radius:8px; padding:1rem 1.2rem; margin:.6rem 0; }
+  button { background:#2f81f7; color:#fff; border:0; border-radius:6px; padding:.5rem .9rem; font:inherit; cursor:pointer; }
+  button:disabled { background:#3a4450; color:#8b98a8; cursor:default; }
+  button.warn { background:#b26a00; }
+  select, input[type=text] { background:#0d1116; color:#d8dee6; border:1px solid #2a3440; border-radius:6px; padding:.4rem .5rem; font:inherit; }
+  #log { background:#0b0f12; border:1px solid #2a3440; border-radius:6px; padding:.6rem; height:12rem; overflow-y:auto; font-size:.82rem; white-space:pre-wrap; }
+  #bar { width:100%; height:10px; background:#0d1116; border-radius:5px; overflow:hidden; margin:.5rem 0; }
+  #barFill { height:100%; width:0%; background:#2f81f7; transition:width .1s; }
+  .ok { color:#8fd3a0; } .err { color:#ff7b72; } .dim { color:#7d8896; }
+  a { color:#2f81f7; }
+  label { display:inline-block; margin-right:1rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Workout-Time &mdash; browser flasher for Teensy 4.0 / 4.1</h1>
+  <p class="dim">Flashes <b>.hex</b> firmware over USB using WebHID (the same halfkdf
+  protocol as Teensy Loader). Chrome / Edge / Brave on any OS. The device must be in
+  bootloader mode: <b>hold the program button on the Teensy for ~4 seconds</b>.</p>
+
+  <div class="card" id="notSupported" style="display:none">
+    <span class="err">WebHID is not available in this browser.</span>
+    Use Chrome or Edge over HTTPS (GitHub Pages) &mdash; WebHID does not work from
+    <code>file://</code> or Firefox/Safari.
+  </div>
+
+  <h2>1. Firmware</h2>
+  <div class="card">
+    <label><input type="radio" name="src" value="release" checked> From GitHub release:</label>
+    <select id="releaseAsset"><option>loading&hellip;</option></select>
+    <button id="reloadAssets" class="warn" style="display:none">retry</button>
+    <br><br>
+    <label><input type="radio" name="src" value="local"> From local file:</label>
+    <input type="file" id="hexFile" accept=".hex">
+    <br><br>
+    <span class="dim">Target:</span>
+    <select id="target">
+      <option value="auto">auto-detect from .hex</option>
+      <option value="TEENSY40">Teensy 4.0</option>
+      <option value="TEENSY41">Teensy 4.1</option>
+    </select>
+    <div id="hexInfo" class="dim"></div>
+  </div>
+
+  <h2>2. Device</h2>
+  <div class="card">
+    <button id="connect">Connect to Teensy bootloader</button>
+    <button id="rebootSerial" class="warn" title="Uses the 1200-baud reset trick; requires the running firmware to expose USB serial">Ask running Teensy to reboot &circlearrowright;</button>
+    <span id="devState" class="dim">not connected</span>
+  </div>
+
+  <h2>3. Flash</h2>
+  <div class="card">
+    <button id="flash" disabled>Flash firmware</button>
+    <button id="bootOnly" disabled>Boot (jump to app) only</button>
+    <div id="bar"><div id="barFill"></div></div>
+    <div id="log"></div>
+  </div>
+
+  <p class="dim">Repo: <a href="https://github.com/andrixb/Workout-Time">andrixb/Workout-Time</a>
+  &middot; protocol ported from <a href="https://github.com/PaulStoffregen/teensy_loader_cli">teensy_loader_cli</a> (GPL)</p>
+</div>
+
+<script>
+"use strict";
+
+const REPO = "andrixb/Workout-Time";
+const BOOT_VID = 0x16C0, BOOT_PID = 0x0478;
+const SERIAL_VID = 0x16C0, SERIAL_PID = 0x0486;
+
+const TARGETS = {
+  TEENSY40: { codeSize: 2031616 },
+  TEENSY41: { codeSize: 8126464 },
+};
+const BLOCK = 1024, REPORT = BLOCK + 64;
+
+const $ = id => document.getElementById(id);
+const logEl = $("log"), barEl = $("barFill");
+let hidDevice = null;
+let image = null; // {blocks: Map, minAddr, maxAddr, codeSize, target}
+
+function log(msg, cls) {
+  const span = document.createElement("span");
+  span.className = cls || "";
+  span.textContent = msg + "\n";
+  logEl.appendChild(span);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setProgress(p) { barEl.style.width = (p * 100).toFixed(1) + "%"; }
+
+// ---------- Intel HEX parsing ----------
+function parseHex(text, codeSize) {
+  const blocks = new Map();
+  let ext = 0, maxAddr = 0, minAddr = 0xFFFFFFFF, dataBytes = 0, sawEOF = false;
+  const lines = text.split(/\r?\n/);
+  for (let ln = 0; ln < lines.length; ln++) {
+    const line = lines[ln].trim();
+    if (!line) continue;
+    if (line[0] !== ":") throw new Error(`hex line ${ln + 1}: missing ':'`);
+    const bytes = [];
+    for (let i = 1; i + 1 < line.length; i += 2) bytes.push(parseInt(line.substr(i, 2), 16));
+    if (bytes.some(isNaN)) throw new Error(`hex line ${ln + 1}: bad byte`);
+    const len = bytes[0], addr = (bytes[1] << 8) | bytes[2], type = bytes[3];
+    let sum = len + bytes[1] + bytes[2] + type;
+    for (let i = 4; i < 4 + len; i++) sum += bytes[i];
+    if (((sum + bytes[4 + len]) & 255) !== 0) throw new Error(`hex line ${ln + 1}: checksum error`);
+    if (type === 0) {
+      const base = ext + addr;
+      for (let i = 0; i < len; i++) {
+        const a = base + i;
+        if (a >= codeSize) continue;
+        const bi = a >> 10, off = a & 1023;
+        let b = blocks.get(bi);
+        if (!b) { b = new Uint8Array(BLOCK).fill(0xFF); blocks.set(bi, b); }
+        b[off] = bytes[4 + i];
+        dataBytes++;
+        if (a > maxAddr) maxAddr = a;
+        if (a < minAddr) minAddr = a;
+      }
+    } else if (type === 1) {
+      sawEOF = true;
+    } else if (type === 2) {
+      ext = ((bytes[4] << 8) | bytes[5]) << 4;
+    } else if (type === 4) {
+      let e = ((bytes[4] << 8) | bytes[5]) << 16;
+      if (e === 0x60000000) e = 0;            // T4 flexspi base offset
+      if (e >= 0x60000000 && e < 0x60000000 + codeSize) e -= 0x60000000;
+      ext = e;
+    }
+  }
+  if (!sawEOF) throw new Error("hex has no end-of-file record");
+  if (!blocks.size) throw new Error("hex has no data");
+  const auto = maxAddr < TARGETS.TEENSY40.codeSize ? "TEENSY40" : "TEENSY41";
+  return { blocks, minAddr, maxAddr, dataBytes, auto };
+}
+
+// auto target: a T4.1 hex may only use low addresses, so prefer manual
+// selection if unsure; auto picks the smallest board that fits.
+function pickTarget(img) {
+  const sel = $("target").value;
+  if (sel !== "auto") return sel;
+  return img.auto;
+}
+
+// ---------- release assets ----------
+async function loadAssets() {
+  const sel = $("releaseAsset");
+  sel.innerHTML = "<option>loading&hellip;</option>";
+  $("reloadAssets").style.display = "none";
+  try {
+    const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`,
+      { headers: { Accept: "application/vnd.github+json" } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    const assets = (j.assets || []).filter(a => a.name.endsWith(".hex"));
+    if (!assets.length) throw new Error("release has no .hex assets");
+    sel.innerHTML = "";
+    for (const a of assets) {
+      const o = document.createElement("option");
+      o.value = a.browser_download_url;
+      o.textContent = `${a.name}  (${(j.tag_name || "?")})`;
+      sel.appendChild(o);
+    }
+    log(`Found release ${j.tag_name}: ${assets.length} hex file(s)`, "ok");
+  } catch (e) {
+    sel.innerHTML = "<option value=''>no release available</option>";
+    $("reloadAssets").style.display = "";
+    log("Could not load GitHub release (" + e.message + "); use local file.", "dim");
+  }
+}
+
+async function fetchReleaseHex() {
+  const url = $("releaseAsset").value;
+  if (!url) throw new Error("pick a release asset");
+  log("Downloading " + url + " ...");
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("download failed: HTTP " + r.status);
+  return await r.text();
+}
+
+function srcKind() {
+  return document.querySelector('input[name=src]:checked').value;
+}
+
+async function loadHex() {
+  const text = srcKind() === "local"
+    ? await (await fileToPromise()).text()
+    : await fetchReleaseHex();
+  const probe = parseHex(text, Math.max(TARGETS.TEENSY40.codeSize, TARGETS.TEENSY41.codeSize));
+  const target = pickTarget(probe);
+  if (probe.maxAddr >= TARGETS[target].codeSize)
+    throw new Error(`image max address ${probe.maxAddr} exceeds ${target} flash size`);
+  image = { ...probe, target, codeSize: TARGETS[target].codeSize, text };
+  $("hexInfo").textContent =
+    `${srcKind() === "local" ? $("hexFile").files[0]?.name || "file" : "release"}: ` +
+    `${probe.dataBytes} data bytes, addr ${probe.minAddr}..${probe.maxAddr}, target ${target}`;
+  log($("hexInfo").textContent, "ok");
+  refreshButtons();
+}
+
+function fileToPromise() {
+  const f = $("hexFile").files[0];
+  if (!f) throw new Error("select a .hex file first");
+  return f.text().then(t => ({ text: () => Promise.resolve(t) }));
+}
+
+// ---------- WebHID ----------
+async function ensureOpen() {
+  if (!navigator.hid) throw new Error("WebHID not supported");
+  if (hidDevice && hidDevice.opened) return hidDevice;
+  let devs = await navigator.hid.getDevices({ filters: [{ vendorId: BOOT_VID, productId: BOOT_PID }] });
+  if (!devs.length) {
+    log("Bootloader not visible yet — hold the Teensy program button ~4s, then allow the device...");
+    devs = await navigator.hid.requestDevice({ filters: [{ vendorId: BOOT_VID, productId: BOOT_PID }] });
+  }
+  if (!devs.length) throw new Error("no device selected");
+  hidDevice = devs[0];
+  await hidDevice.open();
+  $("devState").textContent = "connected (halfkdf bootloader)";
+  $("devState").className = "ok";
+  log("Connected to Teensy HalfKay/halfkdf bootloader", "ok");
+  return hidDevice;
+}
+
+async function sendReport(data) {
+  await hidDevice.sendReport(0, data);
+}
+
+async function flashImage(onBlock) {
+  const target = pickTarget(image);
+  if (image.target !== target) image.target = target;
+  const total = Math.floor((image.maxAddr + BLOCK) / BLOCK);
+  log(`Erasing + programming ${target} (${total} blocks)...`);
+  let sent = 0;
+  for (let bi = 0; bi < total; bi++) {
+    const b = image.blocks.get(bi);
+    if (bi > 0 && !b) continue;                 // skip blank (except block 0 = erase)
+    if (b && b.every(x => x === 0xFF)) continue;
+    const rep = new Uint8Array(REPORT);
+    const addr = bi * BLOCK;
+    rep[0] = addr & 255;
+    rep[1] = (addr >> 8) & 255;
+    rep[2] = (addr >> 16) & 255;
+    if (b) rep.set(b, 64);
+    await sendReport(rep);
+    sent++;
+    onBlock(bi, total);
+  }
+  log(`${sent} block(s) written.`, "ok");
+}
+
+async function jumpBoot() {
+  const rep = new Uint8Array(REPORT);
+  rep[0] = 0xFF; rep[1] = 0xFF; rep[2] = 0xFF;
+  await sendReport(rep);
+  log("Jump-to-application sent. Device should reboot into the new firmware.", "ok");
+}
+
+// 1200-baud reset trick via WebSerial (works if the running sketch
+// exposes USB serial — our firmware calls Serial.begin()).
+async function rebootViaSerial() {
+  if (!navigator.serial) { log("WebSerial not available; hold the button instead.", "dim"); return; }
+  try {
+    const devs = await navigator.serial.getPorts();
+    let port = devs.find(p => { const i = p.getInfo(); return i.usbVendorId === SERIAL_VID; });
+    if (!port) {
+      const picked = await navigator.serial.requestPort({ filters: [{ usbVendorId: SERIAL_VID }] });
+      port = picked;
+    }
+    await port.open({ baudRate: 1200 });
+    await port.close();
+    log("Sent 1200-baud reset — bootloader will appear.", "ok");
+  } catch (e) {
+    log("Serial reboot failed: " + e.message + " (hold the program button instead)", "err");
+  }
+}
+
+// ---------- UI glue ----------
+function refreshButtons() {
+  $("flash").disabled = !(image && hidDevice && hidDevice.opened);
+  $("bootOnly").disabled = !(hidDevice && hidDevice.opened);
+}
+
+$("connect").addEventListener("click", async () => {
+  try { await ensureOpen(); refreshButtons(); }
+  catch (e) { log(e.message, "err"); }
+});
+
+$("rebootSerial").addEventListener("click", rebootViaSerial);
+
+document.querySelectorAll('input[name=src]').forEach(r => r.addEventListener("change", () => {
+  $("hexFile").disabled = r.value !== "local" && true;
+}));
+$("hexFile").addEventListener("change", () => { image = null; loadHex().catch(e => log(e.message, "err")); });
+$("releaseAsset").addEventListener("change", () => { image = null; });
+$("target").addEventListener("change", () => { image = null; });
+document.querySelectorAll('input[name=src]').forEach(r => r.addEventListener("change", () => {
+  if (srcKind() === "release" && !$("hexFile").files[0]) { image = null; $("hexInfo").textContent = ""; refreshButtons(); }
+}));
+
+$("flash").addEventListener("click", async () => {
+  try {
+    if (!image) await loadHex();
+    await ensureOpen();
+    await flashImage((i, n) => setProgress((i + 1) / n));
+    setProgress(1);
+    await jumpBoot();
+  } catch (e) {
+    log("Flash failed: " + (e.message || e), "err");
+    setProgress(0);
+  }
+});
+
+$("bootOnly").addEventListener("click", async () => {
+  try { await ensureOpen(); await jumpBoot(); }
+  catch (e) { log(e.message, "err"); }
+});
+
+if (!navigator.hid) {
+  $("notSupported").style.display = "";
+  ["connect", "flash", "bootOnly"].forEach(id => $(id).disabled = true);
+}
+
+$("reloadAssets").addEventListener("click", loadAssets);
+loadAssets();
+
+window.addEventListener("deviceondisconnect", e => {
+  if (hidDevice && e.device === hidDevice) {
+    hidDevice = null;
+    $("devState").textContent = "disconnected";
+    $("devState").className = "dim";
+    refreshButtons();
+  }
+});
+</script>
+</body>
+</html>

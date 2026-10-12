@@ -1,0 +1,44 @@
+name: build-and-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build Teensy 4.0 (4 outs)
+        run: pio run -e teensy40
+
+      - name: Build Teensy 4.1 (8 outs)
+        run: pio run -e teensy41
+
+      - name: Stage hex files
+        run: |
+          mkdir -p dist
+          cp .pio/build/teensy40/firmware.hex dist/workout-time-teensy40.hex
+          cp .pio/build/teensy41/firmware.hex dist/workout-time-teensy41.hex
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-hex
+          path: dist/*.hex
+
+      - name: Release with hex assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.hex
+          generate_release_notes: true
