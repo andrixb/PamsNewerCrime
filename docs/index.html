@@ -246,8 +246,15 @@ async function ensureOpen() {
   return hidDevice;
 }
 
-async function sendReport(data) {
-  await hidDevice.sendReport(0, data);
+async function sendReport(data, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try { await hidDevice.sendReport(0, data); return; }
+    catch (e) {
+      if (Date.now() >= deadline) throw e;
+      await new Promise(r => setTimeout(r, 10));
+    }
+  }
 }
 
 async function flashImage(onBlock) {
@@ -266,7 +273,8 @@ async function flashImage(onBlock) {
     rep[1] = (addr >> 8) & 255;
     rep[2] = (addr >> 16) & 255;
     if (b) rep.set(b, 64);
-    await sendReport(rep);
+    // first writes trigger the mass erase; the device NAKs until it is done
+    await sendReport(rep, sent <= 4 ? 45000 : 1500);
     sent++;
     onBlock(bi, total);
   }
@@ -276,7 +284,7 @@ async function flashImage(onBlock) {
 async function jumpBoot() {
   const rep = new Uint8Array(REPORT);
   rep[0] = 0xFF; rep[1] = 0xFF; rep[2] = 0xFF;
-  await sendReport(rep);
+  try { await sendReport(rep, 1000); } catch (e) { /* device often detaches before ack */ }
   log("Jump-to-application sent. Device should reboot into the new firmware.", "ok");
 }
 
