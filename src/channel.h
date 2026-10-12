@@ -9,7 +9,22 @@ enum OutMode : uint8_t {
   MODE_RAMP,
   MODE_STEP,
   MODE_SH,
+  MODE_NOTE,
+  MODE_ENV,
+  MODE_LOGIC,
+  MODE_WGGLE,
+  MODE_RWALK,
   MODE_LAST
+};
+
+enum LogicOp : uint8_t {
+  LOGIC_OFF = 0,
+  LOGIC_AND,
+  LOGIC_OR,
+  LOGIC_XOR,
+  LOGIC_NAND,
+  LOGIC_NOR,
+  LOGIC_LAST
 };
 
 enum LfWave : uint8_t { LFO_SINE = 0, LFO_TRI, LFO_SAW, LFO_SQR, LFO_LAST };
@@ -21,6 +36,7 @@ struct Ratio {
 
 extern const Ratio RATIO_TABLE[];
 extern const uint8_t RATIO_COUNT;
+extern const uint8_t SCALE_COUNT;
 
 enum CvParam : uint8_t {
   CVP_NONE = 0,
@@ -55,6 +71,14 @@ struct ChannelParams {
   int8_t cv_scale1;
   uint8_t cv_src2;
   int8_t cv_scale2;
+  uint8_t cv_in1;    // modulator source 1: 0=CV1 jack, 1=CV2 jack, 2..9=channel out 1..8
+  uint8_t cv_in2;    // modulator source 2
+  uint8_t slew;      // lag on CV output, 0=off (time constant ~ 256/slew ms)
+  uint8_t scale;     // note mode scale index
+  uint8_t env_a;     // env attack, ms = v * 32
+  uint8_t env_d;     // env decay, ms = v * 32
+  uint8_t logic_op;  // LogicOp
+  uint8_t logic_src; // logic partner channel, 0=none, 1..NUM_OUTPUTS
 };
 
 struct Channel {
@@ -67,6 +91,11 @@ struct Channel {
   uint8_t step_idx;
   uint8_t sh_val;
   uint8_t skip_next;
+  uint16_t env_t;    // envelope ms counter
+  uint16_t filt_mv;  // slew filter state
+  int16_t wv;        // woggle / random-walk value 0..255
+  int8_t dir;        // woggle direction
+  uint8_t last_note; // note mode: last quantized semitone for gate detection
 };
 
 extern Channel channels[NUM_OUTPUTS];

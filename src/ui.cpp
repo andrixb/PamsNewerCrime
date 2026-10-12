@@ -7,9 +7,11 @@
 
 extern Channel channels[NUM_OUTPUTS];
 
-static const char *MODE_NAMES[] = { "off", "pulse", "LFO", "ramp", "step", "S&H" };
+static const char *MODE_NAMES[] = { "off", "pulse", "LFO", "ramp", "step", "S&H", "note", "env", "logic", "woggle", "rwalk" };
 static const char *WAVE_NAMES[] = { "sin", "tri", "saw", "sqr" };
 static const char *CVP_NAMES[]  = { "--", "range", "width", "phase", "delay", "prob", "ratio" };
+static const char *SCALE_NAMES[] = { "chro", "major", "minor", "dorian", "phryg", "lydian", "mixolyd", "harm", "penta", "pentmn", "blues", "whole" };
+static const char *LOGIC_NAMES[] = { "--", "and", "or", "xor", "nand", "nor" };
 static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A", "load bank B", "defaults" };
 
 #define P_RATIO 0
@@ -33,7 +35,15 @@ static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A"
 #define P_CVSC1 33
 #define P_CVS2 34
 #define P_CVSC2 35
-#define CH_PARAM_COUNT 36
+#define P_SLEW 36
+#define P_SCALE 37
+#define P_ENV_A 38
+#define P_ENV_D 39
+#define P_LGOP 40
+#define P_LGSRC 41
+#define P_IN1S 42
+#define P_IN2S 43
+#define CH_PARAM_COUNT 44
 
 #define MASTER_PARAM_COUNT 4
 
@@ -82,6 +92,14 @@ static int16_t get_val(uint8_t ch, uint8_t idx) {
     case P_CVS1: return p.cv_src1;
     case P_CVSC1: return p.cv_scale1;
     case P_CVS2: return p.cv_src2;
+    case P_SLEW: return p.slew;
+    case P_SCALE: return p.scale;
+    case P_ENV_A: return p.env_a;
+    case P_ENV_D: return p.env_d;
+    case P_LGOP: return p.logic_op;
+    case P_LGSRC: return p.logic_src;
+    case P_IN1S: return p.cv_in1;
+    case P_IN2S: return p.cv_in2;
     default: return p.cv_scale2;
   }
 }
@@ -127,6 +145,14 @@ static void set_val(uint8_t ch, uint8_t idx, int32_t v) {
     case P_CVS1: p.cv_src1 = constrain(v, 0, CVP_LAST - 1); break;
     case P_CVSC1: p.cv_scale1 = constrain(v, -128, 127); break;
     case P_CVS2: p.cv_src2 = constrain(v, 0, CVP_LAST - 1); break;
+    case P_SLEW: p.slew = constrain(v, 0, 255); break;
+    case P_SCALE: p.scale = constrain(v, 0, SCALE_COUNT - 1); break;
+    case P_ENV_A: p.env_a = constrain(v, 0, 255); break;
+    case P_ENV_D: p.env_d = constrain(v, 0, 255); break;
+    case P_LGOP: p.logic_op = constrain(v, 0, LOGIC_LAST - 1); break;
+    case P_LGSRC: p.logic_src = constrain(v, 0, NUM_OUTPUTS); break;
+    case P_IN1S: p.cv_in1 = constrain(v, 0, 1 + NUM_OUTPUTS); break;
+    case P_IN2S: p.cv_in2 = constrain(v, 0, 1 + NUM_OUTPUTS); break;
     default: p.cv_scale2 = constrain(v, -128, 127); break;
   }
   if (touch_euclid) channel_rebuild_euclid(channels[ch]);
@@ -168,6 +194,14 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
     case P_CVS1: return "cv in 1";
     case P_CVSC1: return "cv1 scale";
     case P_CVS2: return "cv in 2";
+    case P_SLEW: return "lag";
+    case P_SCALE: return "scale";
+    case P_ENV_A: return "attack";
+    case P_ENV_D: return "decay";
+    case P_LGOP: return "logic";
+    case P_LGSRC: return "lg src";
+    case P_IN1S: return "cv1 from";
+    case P_IN2S: return "cv2 from";
     default: return "cv2 scale";
   }
 }
@@ -205,6 +239,16 @@ static void fmt_val(uint8_t ch, uint8_t idx, char *buf, size_t n) {
     case P_INV: case P_EUEN: snprintf(buf, n, v ? "on" : "off"); break;
     case P_CVS1: case P_CVS2: snprintf(buf, n, "%s", CVP_NAMES[v]); break;
     case P_CVSC1: case P_CVSC2: snprintf(buf, n, "%d", v); break;
+    case P_SLEW: snprintf(buf, n, v ? "%dms" : "off", v * 8); break;
+    case P_SCALE: snprintf(buf, n, "%s", SCALE_NAMES[v]); break;
+    case P_ENV_A: case P_ENV_D: snprintf(buf, n, "%dms", v * 32); break;
+    case P_LGOP: snprintf(buf, n, "%s", LOGIC_NAMES[v]); break;
+    case P_LGSRC: if (v) snprintf(buf, n, "out%d", v); else snprintf(buf, n, "--"); break;
+    case P_IN1S: case P_IN2S:
+      if (v == 0) snprintf(buf, n, "CV1");
+      else if (v == 1) snprintf(buf, n, "CV2");
+      else snprintf(buf, n, "out%d", v - 1);
+      break;
     default: snprintf(buf, n, "%d", v); break;
   }
 }

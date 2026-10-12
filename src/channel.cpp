@@ -4,17 +4,26 @@
 #include <string.h>
 
 const Ratio RATIO_TABLE[] = {
+  { "1/64", 1536 },
+  { "1/13", 1890 },
+  { "1/32T", 2048 },
+  { "1/11", 2234 },
+  { "1/9", 2731 },
   { "1/32", 3072 },
-  { "1/16", 6144 },
+  { "1/7", 3511 },
   { "1/16T", 4096 },
-  { "1/8", 12288 },
+  { "1/32.", 4608 },
+  { "1/5", 4915 },
+  { "1/16", 6144 },
   { "1/8T", 8192 },
+  { "1/16.", 9216 },
+  { "1/8", 12288 },
+  { "1/4T", 16384 },
   { "1/8.", 18432 },
   { "1/4", 24576 },
-  { "1/4T", 16384 },
+  { "1/2T", 32768 },
   { "1/4.", 36864 },
   { "1/2", 49152 },
-  { "1/2T", 32768 },
   { "1/2.", 73728 },
   { "1bar", 98304 },
   { "2bar", 196608 },
@@ -31,6 +40,44 @@ static const uint16_t SINE_LUT[65] = {
   680, 608, 535, 461, 386, 310, 233, 156, 78, 0,
   0, 0, 0, 0, 0, 0, 0, 0, 0
 };
+
+static const uint16_t SCALE_MASKS[] = {
+  0xFFF,  // chromatic
+  0xAB5,  // major
+  0x5AD,  // minor
+  0x6AD,  // dorian
+  0x5AB,  // phrygian
+  0xAD5,  // lydian
+  0x6B5,  // mixolydian
+  0x9AD,  // harmonic minor
+  0x295,  // pentatonic major
+  0x4A9,  // pentatonic minor
+  0x4E9,  // blues
+  0x555,  // whole tone
+};
+const uint8_t SCALE_COUNT = sizeof(SCALE_MASKS) / sizeof(SCALE_MASKS[0]);
+
+static int quantize_semi(int pos, uint16_t mask) {
+  int oct = pos / 12, m = pos % 12;
+  for (int d = 0; d <= 6; d++) {
+    int lo = m - d;
+    if (lo >= 0 && ((mask >> lo) & 1)) return oct * 12 + lo;
+    if (lo < 0 && oct > 0 && ((mask >> (lo + 12)) & 1)) return (oct - 1) * 12 + (lo + 12);
+    int hi = m + d;
+    if (hi <= 11 && ((mask >> hi) & 1)) return oct * 12 + hi;
+    if (hi > 11 && ((mask >> (hi - 12)) & 1)) return (oct + 1) * 12 + (hi - 12);
+  }
+  return pos;
+}
+
+static uint8_t resolve_in(uint8_t sel, uint8_t cv1, uint8_t cv2) {
+  if (sel == 0) return cv1;
+  if (sel == 1) return cv2;
+  uint8_t ch = sel - 2;
+  if (ch >= NUM_OUTPUTS) return 0;
+  uint16_t mv = channels[ch].out_mv;
+  return mv >= 4080 ? 255 : (mv >> 4);
+}
 
 static void apply_cv(ChannelParams &p, uint8_t src, int8_t scale, int val) {
   if (!src || !scale) return;
@@ -84,7 +131,12 @@ void channels_reset() {
     c.step_idx = 0;
     c.sh_val = 1;
     c.skip_next = 1;
+    c.env_t = 0;
+    c.wv = 128;
+    c.dir = 1;
+    c.last_note = 0;
     c.out_mv = 0;
+    c.filt_mv = 0;
     dac_write(i, 0);
   }
 }
@@ -145,8 +197,8 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
       continue;
     }
 
-    apply_cv(p, p.cv_src1, p.cv_scale1, cv1);
-    apply_cv(p, p.cv_src2, p.cv_scale2, cv2);
+    apply_cv(p, p.cv_src1, p.cv_scale1, resolve_in(p.cv_in1, cv1, cv2));
+    apply_cv(p, p.cv_src2, p.cv_scale2, resolve_in(p.cv_in2, cv1, cv2));
 
     uint32_t period = RATIO_TABLE[p.ratio].period_x256;
     uint32_t phase_off = (uint32_t)p.phase * period / 256;
@@ -212,11 +264,87 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
         c.gate_state = fire;
         break;
       }
+      case MODE_NOTE: {
+        uint32_t span = p.cv_max > p.cv_min ? (uint32_t)(p.cv_max - p.cv_min) : 0;
+        uint32_t st = span / 83;
+        if (st < 1) st = 1;
+        int pos = (int)((st * ph256) >> 8);
+        int q = quantize_semi(pos, SCALE_MASKS[p.scale % SCALE_COUNT]);
+        frac = (uint16_t)((uint32_t)q * 2048 / st);
+        if (frac > 2048) frac = 2048;
+        uint8_t note = q > 255 ? 255 : (uint8_t)q;
+        c.gate_state = (note != c.last_note);
+        c.last_note = note;
+        break;
+      }
+      case MODE_ENV: {
+        uint32_t a = p.env_a ? (uint32_t)p.env_a * 32 : 1;
+        uint32_t d = p.env_d ? (uint32_t)p.env_d * 32 : 1;
+        if (fire) { c.env_t = 0; c.gate_state = 1; }
+        if (c.gate_state) {
+          c.env_t++;
+          if (c.env_t <= a) frac = (uint16_t)((uint32_t)c.env_t * 2048 / a);
+          else if (c.env_t <= a + d) frac = (uint16_t)((a + d - c.env_t) * 2048 / d);
+          else { c.gate_state = 0; frac = 0; }
+        }
+        break;
+      }
+      case MODE_LOGIC: {
+        uint32_t gate_ph = (c.pos_x256 + period - (uint32_t)p.delay * period / 256) % period;
+        uint32_t g256 = gate_ph * 256 / period;
+        uint32_t w256 = p.width ? p.width : 1;
+        if (fire) c.sh_val = c.skip_next ? 0 : 1;
+        bool own = c.sh_val && g256 < w256;
+        bool other = (p.logic_src >= 1 && p.logic_src <= NUM_OUTPUTS)
+                     && channels[p.logic_src - 1].gate_state;
+        bool on;
+        switch (p.logic_op) {
+          case LOGIC_AND: on = own && other; break;
+          case LOGIC_OR:  on = own || other; break;
+          case LOGIC_XOR: on = own != other; break;
+          case LOGIC_NAND:on = !(own && other); break;
+          case LOGIC_NOR: on = !(own || other); break;
+          default:        on = own; break;
+        }
+        c.gate_state = on;
+        frac = on ? 2048 : 0;
+        break;
+      }
+      case MODE_WGGLE: {
+        uint8_t r = rand8();
+        if (fire || r < p.skew) {
+          c.wv = rand8();
+          c.dir = (rand8() & 1) ? 1 : -1;
+        } else {
+          c.wv += c.dir * ((int16_t)(p.width >> 4) + 1);
+          if (c.wv > 255) { c.wv = 255; c.dir = -1; }
+          if (c.wv < 0)   { c.wv = 0;   c.dir = 1; }
+        }
+        frac = (uint16_t)(c.wv + 1) * 8;
+        c.gate_state = c.dir > 0;
+        break;
+      }
+      case MODE_RWALK: {
+        int16_t step = (int16_t)(p.width >> 4) + 1;
+        c.wv += (rand8() & 1) ? step : -step;
+        if (c.wv > 255) c.wv = 255;
+        if (c.wv < 0) c.wv = 0;
+        frac = (uint16_t)(c.wv + 1) * 8;
+        c.gate_state = fire;
+        break;
+      }
       default:
         break;
     }
 
     uint16_t mv = scaled(p, frac);
+    if (p.slew && p.mode != MODE_PULSE && p.mode != MODE_LOGIC) {
+      int32_t diff = (int32_t)mv - (int32_t)c.filt_mv;
+      c.filt_mv += (int16_t)((diff * (int32_t)p.slew) >> 8);
+      mv = c.filt_mv;
+    } else {
+      c.filt_mv = mv;
+    }
     c.out_mv = mv;
     dac_write(i, (uint32_t)mv * 4095 / DAC_MAX_MV);
   }
