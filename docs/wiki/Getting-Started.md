@@ -32,16 +32,16 @@ outputs are pre-configured as clocked `pulse` gates on different ratios.
 A 60-second tour:
 
 1. **Set tempo** — turn the **right encoder** to change BPM (hold its push while
-   turning for fine steps). `10.00` … `300.00`.
+   turning for fine steps). `10.00` … `330.00`.
 2. **Start / stop** — tap the **left encoder push**. A running clock shows `>` in
    the page header.
-3. **Pick an output** — press the **top / bottom buttons** to move between
+3. **Pick an output** — press the **left / right buttons** to move between
    `M / OUT1 / OUT2 / OUT3 / OUT4 / SYS`.
 4. **Choose an app** — on an output page, **hold the left encoder** to open the
    [app menu](Controls-UI.md#the-app-menu), scroll to `LFO` (for example) and
    press an encoder to assign it.
 5. **Shape it** — now scroll the parameter groups with the left encoder and edit
-   values with the right: `wave` (sine/tri/saw/sqr), `skew`, `range`, etc.
+   values with the right: `wave` (sine/tri/saw/sqr/trapz/parab), `skew`, `range`, etc.
 6. **Reset phases** — hold the **right encoder push** to snap every channel back
    to the start of its cycle (musically: re-align all the patterns at once).
 

@@ -10,13 +10,14 @@ Start with the [Overview](Overview.md), then drill in:
 | [Overview](Overview.md) | The big picture: how the clock, outputs and modulation fit together |
 | [Getting Started](Getting-Started.md) | Hardware, flashing the firmware, first patch |
 | [Controls & UI](Controls-UI.md) | The two encoders, two buttons, pages and the app menu |
-| [Modes](Modes.md) | Every app in detail: pulse, LFO, ramp, step, S&H, note, env, logic, woggle, rwalk |
+| [Modes](Modes.md) | Every app in detail: pulse, LFO, ramp, step, S&H, note, env, logic, woggle, rwalk, div, quant, ratch |
 | [Parameters](Parameters.md) | Every parameter, what it does, its range, and which group it lives in |
-| [Clock & Ratios](Clock-Ratios.md) | Master clock, external sync, the 24 musical ratios, phase, delay |
-| [Euclid & Probability](Euclid-Probability.md) | Euclidean rhythm generation and per-event probability |
-| [CV Modulation](CV-Modulation.md) | Assigning CV inputs / other outputs to modulate any channel's params |
-| [Storage & Banks](Storage-Banks.md) | Autosave, save/load banks A/B, what persists |
-| [Building](Building.md) | Compiling from source with PlatformIO |
+| [Clock & Ratios](Clock-Ratios.md) | Master clock, global swing, external sync, the 24 musical ratios, phase, delay |
+| [Euclid & Probability](Euclid-Probability.md) | Euclidean rhythms with loop, per-event and per-step probability |
+| [FLEX & Cross-ops](Flex-and-Cross.md) | Micro-timing (human/swing/accel/hump/fall), cross output modulation, global quantiser |
+| [CV Modulation](CV-Modulation.md) | Assigning CV inputs / other outputs to modulate a channel's params |
+| [Storage & Banks](Storage-Banks.md) | Autosave, save/load banks A/B, user scales, what persists |
+| [Building](Building.md) | Compiling from source with PlatformIO, running the native unit tests |
 
 ---
 

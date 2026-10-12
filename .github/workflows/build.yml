@@ -22,6 +22,9 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
+      - name: Native unit tests
+        run: make test
+
       - name: Build Teensy 4.0 (O_C hardware)
         run: pio run -e teensy40
 

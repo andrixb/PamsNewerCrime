@@ -35,6 +35,11 @@ Which parameter the source bends:
 | `delay` | swing / gate offset |
 | `prob` | fire probability |
 | `ratio` | steps through the ratio list — a CV can *play* different divisions |
+| `div` | the `div` app's stage-1 factor (CV divides/multiplies the clock live) |
+| `skew` | LFO/ramp shape, woggle chaos |
+| `attack` | env attack time |
+| `decay` | env decay time |
+| `slew` | lag / slew amount |
 
 ## 3. Depth & direction — `cv1 scale` / `cv2 scale`
 
@@ -54,6 +59,14 @@ A signed **−128 … +127** amount:
   so it never leaves the DAC window or crosses over.
 - The two chains are independent — you can modulate `prob` from CV1 and `ratio`
   from an output simultaneously on one channel.
+
+## Modulation vs. cross-ops
+
+This *mod* group bends a **parameter** (phase, width, ratio …) from a source. It
+is separate from **cross-ops** (the `cross` group), which combine this channel's
+**output value** with a source (mix/add/mask/…) — see
+[FLEX & Cross-ops](Flex-and-Cross.md). A channel can use both at once: modulate
+its own ratio from CV1 while its final voltage is masked by out2.
 
 ### Idea starters
 

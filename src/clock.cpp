@@ -40,7 +40,8 @@ void MasterClock::tick() {
   if (source == 0) {
     if (!running) return;
     uint32_t bpm = constrain(bpm_cent, BPM_MIN, BPM_MAX);
-    frac_acc += (uint64_t)TICKS_PER_QUARTER * 256 * bpm * 10;
+    // units/ms = 24576 (per quarter) * bpm_cent / (60000 ms/min * 100 cent)
+    frac_acc += (uint64_t)TICKS_PER_QUARTER * 256 * bpm;
     uint64_t denom = 60ULL * 1000ULL * (CONTROL_RATE_HZ / 1000) * 100;
     uint32_t whole = (uint32_t)(frac_acc / denom);
     if (!whole) return;

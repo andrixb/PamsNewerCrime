@@ -25,6 +25,22 @@ pio run                          # builds every environment
 To open it in VS Code: install PlatformIO, then **Open Folder** on the repo root;
 the environments appear in the PlatformIO toolbar.
 
+## Running the tests
+
+The engine logic (Euclid, master clock/swing, channel timing, storage
+CRC) is unit-tested **on the host**, against the real production `.cpp` files
+compiled with a tiny Arduino/EEPROM/DAC mock layer — no hardware, no recompiled
+copy of the logic.
+
+```bash
+make test     # builds test/test_main.cpp + src/{euclid,clock,channel,storage}.cpp
+```
+
+Exit code is non-zero if any check fails. GitHub CI runs `make test` before the
+Teensy builds, so a regression in the engine fails the pipeline even without a
+board attached. Test sources live in `test/` (`mock/Arduino.h`,
+`mock/EEPROM.h`, `mock_hw.cpp`, `test_main.cpp`).
+
 ## Configuration knobs
 
 Set at compile time via `-D` flags / `platformio.ini`:
@@ -32,7 +48,7 @@ Set at compile time via `-D` flags / `platformio.ini`:
 - `NUM_OUTPUTS` (1–4) — number of channels; the O_C quad DAC caps at 4.
 - `ENC_CLICK_STEPS` — quadrature steps per physical detent (default 4). Raise if
   one click moves two values; lower if only every other click registers.
-- `BPM_MIN` / `BPM_MAX` — tempo window (default 10.00 / 300.00).
+- `BPM_MIN` / `BPM_MAX` — tempo window (default 10.00 / 330.00).
 - `TICKS_PER_QUARTER` — clock resolution (default 96 ppq).
 - `CONTROL_RATE_HZ` — update rate (default 1000 Hz; all outputs every tick).
 

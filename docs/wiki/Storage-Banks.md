@@ -33,9 +33,11 @@ recall it later, or A/B two ideas on the spot.
 
 ## What is stored
 
-A single blob holds the master clock (BPM, source, ext ppqn, run) and every
-channel's full parameter set (mode, ratio, all shape params, ranges, euclid,
-probability, step values, and both modulation chains).
+A single blob holds the master clock (BPM, source, ext ppqn, run, **swing**), the
+three **user scales**, and every channel's full parameter set: mode, ratio, all
+shape params, ranges, euclid (incl. loop), probability (global **and per-step**),
+step values, the **flex** and **cross-op** settings, the **global quantise**/scale
+choice, and both modulation chains.
 
 ## Integrity & format
 

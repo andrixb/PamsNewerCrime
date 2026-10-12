@@ -16,9 +16,10 @@ Euclid spreads `fill` pulses as evenly as possible across `length` slots
 | Param | Range | Role |
 |-------|-------|------|
 | `euclid` | on/off | Enable it (off = every event fires, subject to probability). |
-| `eu length` | 1–32 | Slots in the loop. |
+| `eu length` | 1–32 | Slots in the pattern. |
 | `eu fill` | 0–length | Pulses placed in those slots. |
 | `eu rot` | 0–length−1 | Rotate the pattern — shifts the accents without changing the shape. |
+| `eu loop` | 0 / 1–32 | Stretch the cycle past `length` (0 = off). A `3-in-8` pattern with `loop 16` plays the tresillo then 8 rests, realigning every 16 steps — the trick for resetting non-4/4 grooves against a 4/4 grid. |
 
 Examples (length / fill):
 
@@ -47,6 +48,15 @@ let through.
 
 Probability is re-rolled per event, so a `step` sequence still walks forward on
 the events that *do* fire (the held value just persists through the skips).
+
+## Per-step probability (the `step` app)
+
+On top of the channel-wide `prob`, the `step` app gives **each step its own**
+trigger probability (`s1 prob … s16 prob`, 0–100 %, default 100). When a firing
+event lands on a step whose roll fails, the step is *skipped*: the index still
+advances but the gate stays low and the previous value holds — a per-hit rest for
+breaking up a fixed sequence without touching its notes. Set one step to 0 % to
+silence it, or 50 % to make it appear at random.
 
 ## Combining them
 

@@ -143,7 +143,6 @@ struct Channel {
   uint8_t gate_state;
   uint8_t step_idx;
   uint8_t sh_val;
-  uint8_t skip_next;
   uint16_t env_t;    // envelope ms counter
   uint16_t filt_mv;  // slew filter state
   int16_t wv;        // woggle / random-walk value 0..255

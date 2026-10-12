@@ -170,7 +170,7 @@ void channels_reset() {
     c.gate_state = 0;
     c.step_idx = 0;
     c.sh_val = 1;
-    c.skip_next = 1;
+
     c.env_t = 0;
     c.wv = 128;
     c.dir = 1;
@@ -298,22 +298,28 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
     uint32_t events = e_new - e_old;
     c.pos_x256 %= period;
 
-    bool fire = events > 0;
-    if (fire) {
-      c.skip_next = !fire;
+    bool ev = events > 0;
+    bool fire = ev;   // true only if this event passes euclid/probability
+    if (ev) {
       c.event_count += events;
       if (p.eucl_en && p.eucl_len) {
         uint8_t loop = p.eucl_loop >= p.eucl_len ? p.eucl_loop : p.eucl_len;
         uint8_t idx = (uint8_t)((c.event_count - 1 + p.eucl_rot) % loop);
         fire = (idx < p.eucl_len) && ((c.mask >> idx) & 1);
       }
-      if (fire && p.prob < 100 && (rand8() % 100) >= p.prob) { fire = false; c.skip_next = 1; }
+      if (fire && p.prob < 100 && (rand8() % 100) >= p.prob) fire = false;
       // Re-roll the per-event FLEX offsets/rate on each real event.
       if (p.flex == FLEX_HUMAN) c.ev_off = rand8() % ((uint16_t)p.flex_amt + 1);
       if (p.flex == FLEX_ACCEL) {
         if (c.event_count % 8 == 0) c.rate256 = 256;
         else c.rate256 = 256 + (uint16_t)(((uint32_t)p.flex_amt * (c.event_count % 8)) / 8);
       }
+      // Latch the gate-open flag once per raw event for windowed gate modes:
+      // an event that passes euclid/probability opens the window, a skipped
+      // one closes it. (STEP/SH reuse sh_val as a value store, so skip those.)
+      if (p.mode == MODE_PULSE || p.mode == MODE_DIV ||
+          p.mode == MODE_LOGIC || p.mode == MODE_RATCHET)
+        c.sh_val = fire ? 1 : 0;
     }
 
     uint32_t ph = (c.pos_x256 + phase_off) % period;
@@ -325,7 +331,6 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
         uint32_t gate_ph = (c.pos_x256 + period - (uint32_t)p.delay * period / 256) % period;
         uint32_t g256 = gate_ph * 256 / period;
         uint32_t w256 = p.width ? p.width : 1;
-        if (fire) c.sh_val = c.skip_next ? 0 : 1;
         bool on = c.sh_val && g256 < w256;
         c.gate_state = on;
         frac = on ? 2048 : 0;
@@ -333,7 +338,6 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
       }
       case MODE_RATCHET: {
         uint8_t n = p.ratchets ? constrain((int)p.ratchets, 1, 16) : 1;
-        if (fire) c.sh_val = c.skip_next ? 0 : 1;
         uint32_t sub = 256 / n;
         uint32_t r256 = (ph256 % sub) * 256 / sub;
         bool on = c.sh_val && r256 < (uint32_t)(p.width ? p.width : 64);
@@ -425,7 +429,6 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
         uint32_t gate_ph = (c.pos_x256 + period - (uint32_t)p.delay * period / 256) % period;
         uint32_t g256 = gate_ph * 256 / period;
         uint32_t w256 = p.width ? p.width : 1;
-        if (fire) c.sh_val = c.skip_next ? 0 : 1;
         bool own = c.sh_val && g256 < w256;
         bool other = (p.logic_src >= 1 && p.logic_src <= NUM_OUTPUTS)
                      && channels[p.logic_src - 1].gate_state;
@@ -474,9 +477,9 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
     // --- Cross-op: combine this output's value with a source (CV jack or out) ---
     if (p.xop) {
       uint16_t a;
-      if (p.xsrc < 2) {                 // CV jack -> mV over the 0-10V window
-        uint8_t raw = (uint8_t)resolve_in(p.xsrc, cv1, cv2);
-        a = (uint16_t)((uint32_t)raw * DAC_MAX_MV / 255);
+      if (p.xsrc < 2) {                 // CV jack: unipolar 0..255 ADC -> mV
+        uint16_t adc = (p.xsrc == 0) ? cv1 : cv2;   // resolve_in already 0..255 scaled
+        a = (uint16_t)((uint32_t)adc * DAC_MAX_MV / 255);
       } else {
         uint8_t ch = p.xsrc - 2;
         a = ch < NUM_OUTPUTS ? channels[ch].out_mv : 0;

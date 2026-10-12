@@ -828,9 +828,10 @@ void ui_service() {
     else { masterClock.running = !masterClock.running; mark_dirty(); }
   }
 
-  // Two buttons: top = next page, bottom = prev page.
-  if (btn_b2.released()) page_next();
-  if (btn_b1.released()) page_prev();
+  // Two panel buttons (Phazerville: B2 = left, B1 = right). Left goes to the
+  // previous page, right to the next.
+  if (btn_b2.released()) page_prev();
+  if (btn_b1.released()) page_next();
 
   // step_len edits can shrink the list; keep the cursor in range.
   if (is_chan() && param_idx >= param_count()) param_idx = param_count() ? param_count() - 1 : 0;

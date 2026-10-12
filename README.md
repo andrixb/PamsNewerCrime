@@ -18,15 +18,15 @@ The implementation is original code, written from scratch for Teensy 4 hardware.
 ## Features
 
 - 4 CV outputs (O_C quad DAC, `NUM_OUTPUTS=1..4`), each fully independent
-- Master clock: 10.00 - 300.00 BPM (0.01 resolution), internal or external sync
-  (1-48 PPQN pulse input on TR1)
+- Master clock: 10.00 - 330.00 BPM (0.01 resolution), internal or external sync
+  (1-48 PPQN pulse input on TR1), with **global swing** (sync-preserving
+  eighth-note shuffle) on the master grid
 - Per output: 24 musical ratios (1/64 .. 4bar), incl. triplets, dots and odd/prime
   divisions (1/5, 1/7, 1/9, 1/11, 1/13)
 - Modes per output:
-  `pulse / LFO / ramp / step / S&H / note / env / logic / woggle / rwalk / off`
-  - **note** — quantized 1V/oct ramp across the CV range, 12 scales
-    (chromatic, major, minor, dorian, phrygian, lydian, mixolydian, harmonic minor,
-    pentatonic maj/min, blues, whole tone); gate pulses on each note change
+  `pulse / LFO / ramp / step / S&H / note / env / logic / woggle / rwalk / div / quant / ratch / off`
+  - **note** — quantized 1V/oct ramp across the CV range, 29+3 scales; gate pulses
+    on each note change
   - **env** — clock-synced AD envelope, attack/decay 1 ms - 8.1 s, retriggers on each
     event (respects euclid & probability)
   - **logic** — AND / OR / XOR / NAND / NOR of this channel's pulse with any other
@@ -34,19 +34,36 @@ The implementation is original code, written from scratch for Teensy 4 hardware.
   - **woggle** — Wogglebug-style chaos wave (skew = chaos, width = speed, jumps on
     each event)
   - **rwalk** — bounded random walk (RNG out)
-- LFO waves: sine, triangle, saw, square; skew, phase, delay (swing), pulse width
+  - **div** — dual-stage clock divider/multiplier (Phazerville-style), each stage
+    divides by 1–32 or multiplies by 1–32 (net 1:1024 … 1024:1), CV-controllable
+  - **quant** — 1V/oct quantiser following an external CV source (CV1/CV2/any out)
+  - **ratch** — 1–16 bursts of gates per event
+- LFO waves: sine, triangle, saw, square, **trapezoid**, **parabola**; skew, phase,
+  delay (swing), pulse width
+- **FLEX micro-timing** per channel: human, swing, accel, hump, falling (off-grid
+  timing warps)
+- **Cross-ops** (Pro-style cross output modulation) on any app: mix, mask, not,
+  mult, hold, s&h, add, sub, and, or, xor, seed — combine this output's value with
+  a CV input or another output
+- **Global quantiser** post-filter (snap any output to a scale) + 3 editable
+  **user scales** edited on the SYS page
 - Per-output slew/lag (exponential filter; triggers stay sharp)
 - CV min/max range per output, invert, 0-10 V full scale (O_C DAC8565)
-- Euclidean rhythm per output (length 1-32, fill, rotation)
+- Euclidean rhythm per output (length 1-32, fill, rotation, **loop**), plus
+  **per-step probability** on the sequencer
 - Probability per event (event skipping)
 - 16-step sequence with per-step values and length
 - 2 physical CV inputs + **cross-channel routing**: each channel's two modulation
   sources can be CV1, CV2 or any other output's live voltage; each source is
-  assignable to modulate range / width / phase / delay / prob / ratio, with signed scale
+  assignable to modulate range / width / phase / delay / prob / ratio / div / skew /
+  attack / decay / slew, with signed scale
 - 2 save/load banks + automatic persistence (EEPROM emulation, CRC-checked, autosave
-  after 3 s idle; format v3)
-- 128x64 OLED: a tall right-side voltage meter (live output level + gate strip,
-  one bar per output) beside the parameter list; hidden on the SYS page
+  after 3 s idle; format v8)
+- 128x64 OLED: a tall right-side voltage meter (smoothed peak level + gate strip,
+  one bar per output, filled from the box floor) beside the parameter list; hidden
+  on the SYS page
+- **Native unit tests** (`make test`) that build the real engine `.cpp` files on
+  the host against a small Arduino/EEPROM/DAC mock layer
 
 ## Hardware
 
@@ -60,7 +77,7 @@ It uses the exact pin map of the O_C family (verified against Phazerville):
 | DAC CS / RST | 10 / 9 | DAC8565 (outputs 1-4, 0-10 V) |
 | Left encoder A / B / push | 22 / 21 / 23 | left encoder |
 | Right encoder A / B / push | 16 / 15 / 14 | right encoder |
-| Buttons top / bottom | 5 / 4 | two panel buttons |
+| Buttons left / right | 5 / 4 | two panel buttons |
 | Clock input | 0 | TR1 jack (active-low triggers) |
 | CV in 1 / 2 | A3 / A4 (CV1/CV2 jacks) | bipolar, 0 V = mid |
 
@@ -80,17 +97,17 @@ Both knobs and both buttons are wired and live:
 - **Left encoder push** — tap = start/stop master clock (SYS page: run the
   highlighted action); **hold = open the app menu**
 - **Right encoder push** — tap = next parameter; hold = reset all channel phases
-- **Top button** — next page · **Bottom button** — previous page
+- **Left button** — previous page · **Right button** — next page
 - Pages: `M` (master), `OUT1..N`, `SYS`
-- Master page params: `BPM`, `clock` (int / ext), `ext ppqn`, `run`
+- Master page params: `BPM`, `clock` (int / ext), `ext ppqn`, `swing`, `run`
 
 ### The app menu
 
 Hold the **left encoder** on any output page to open the app menu — a list of
-the modes (`off, pulse, LFO, ramp, step, S&H, note, env, logic, woggle, rwalk`),
-one per output like a Phazerville "app". Rotate either encoder to scroll (the
-output's current app is marked `*`), then **press either encoder** to assign it.
-Either panel button cancels.
+the modes (`off, pulse, LFO, ramp, step, S&H, note, env, logic, woggle, rwalk,
+div, quant, ratch`), one per output like a Phazerville "app". Rotate either
+encoder to scroll (the output's current app is marked `*`), then **press either
+encoder** to assign it. Either panel button cancels.
 
 Once assigned, the output page is split into short labelled **groups** instead of
 one long list. The highlighted parameter's group shows on the right of the
@@ -98,14 +115,17 @@ header. Scroll past the end of one group to enter the next:
 
 | Group | Contents |
 |-------|----------|
-| *app name* (shape) | the params unique to the app — e.g. `wave`/`skew` for LFO, `width`/`delay` for pulse, `attack`/`decay` for env, `seq len` + `step 1..N` for step |
+| *app name* (shape) | the params unique to the app — e.g. `wave`/`skew` for LFO, `width`/`delay` for pulse, `attack`/`decay` for env, `seq len` + `step 1..N` + `s.. prob` for step, `div a`/`div b` for div |
 | `clock` | `ratio`, `phase`, `prob` |
-| `euclid` | euclid en / length / fill / rotation (gate-based apps only) |
-| `range` | `cv min`, `cv max`, `invert`, `lag` |
+| `euclid` | euclid en / length / fill / rotation / loop (gate-based apps only) |
+| `flex` | `flex`, `flex amt` (per-channel micro-timing) |
+| `cross` | `x op`, `x src` (cross output modulation) |
+| `range` | `cv min`, `cv max`, `invert`, `lag`, `quantise`, `scale` |
 | `mod` | `cv1/cv2 from`, `cv in 1/2`, `cv1/cv2 scale` (CV modulation) |
 
 Continuous apps (LFO/ramp/woggle) skip the `euclid` group; `S&H` has no shape
-group. SYS page: save/load bank A and B, restore defaults.
+group. SYS page: save/load bank A and B, restore defaults, and three user-scale
+editors (left knob = note, right knob = toggle, push = done).
 
 ## Web flasher
 
@@ -144,6 +164,7 @@ A `Makefile` wraps PlatformIO so you can iterate straight on the board:
 
 ```
 make            # build default env (teensy40)
+make test       # native unit tests (real engine on host w/ mocked Arduino+DAC+EEPROM)
 make flash      # build + flash to the connected Teensy
 make monitor    # 115200 serial console
 make size       # flash/RAM report

@@ -5,7 +5,14 @@
 PIO    := $(shell command -v pio 2>/dev/null || echo $(HOME)/.platformio/penv/bin/pio)
 ENV    ?= teensy40
 
-.PHONY: build flash monitor clean size $(ENV)
+CXX      ?= g++
+TEST_BIN := build/test_pnc
+TEST_SRC := test/test_main.cpp test/mock_hw.cpp \
+            src/euclid.cpp src/clock.cpp src/channel.cpp src/storage.cpp
+TESTFLAGS := -std=gnu++17 -Wall -Wextra -Wno-unused-function \
+             -Itest/mock -Isrc -DNUM_OUTPUTS=4
+
+.PHONY: build flash monitor test clean size $(ENV)
 
 build:            ## compile the default env ($(ENV))
 	$(PIO) run -e $(ENV)
@@ -15,6 +22,11 @@ flash:            ## compile + flash to a connected Teensy in bootloader mode
 
 monitor:          ## serial console (115200)
 	$(PIO) device monitor -e $(ENV)
+
+test:             ## native unit tests (mocked Arduino/EEPROM/DAC)
+	@mkdir -p build
+	$(CXX) $(TESTFLAGS) $(TEST_SRC) -o $(TEST_BIN)
+	@./$(TEST_BIN)
 
 size:             ## flash/RAM usage report
 	$(PIO) run -e $(ENV) -t size
