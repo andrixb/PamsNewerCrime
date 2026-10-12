@@ -150,33 +150,64 @@ static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A"
 static uint8_t page = 0;
 static uint8_t param_idx = 0;
 
-#if !HAS_RIGHT_ENC
-static uint32_t b2_down_ms = 0;
-static bool b2_was_down = false;
-#endif
+// ---------------------------------------------------------------------------
+// Encoder + button decoding, copied from the O_C / Phazerville firmware
+// (UI::Encoder<>, UI::Button<> in src/UI/ui_encoder.h / ui_button.h).
+//
+// Phazerville does NOT use pin-change interrupts. ui.Poll() runs on a 1 kHz
+// UI timer and shifts each pin's level into an 8-bit history every tick.
+// Direction comes from detecting a rising edge on one phase while the other
+// phase is low across the last two samples. This is why the previous poll-with
+// -2ms-settle-filter dropped steps, and why an edge-ISR is unnecessary: at
+// 1 kHz a single detent is captured as one clean transition, and the rolling
+// bit history debounces for free. Buttons use the same 7-bit rolling shift:
+// 0x80 = just pressed, 0x7f = just released, 0x00 = held.
+// ---------------------------------------------------------------------------
+static uint32_t ui_ticks = 0;
 
-// ---------------------------------------------------------------------------
-// Quadrature encoders, decoded in a pin-change ISR (both A and B edges).
-// The old design polled the two pins once per 1 kHz tick and required a new
-// state to be stable for 2 ms before accepting it; turn the knob a little fast
-// and whole detents were dropped, and the noInterrupts() window in the OLED
-// flush stalled the poll entirely. A hardware edge interrupt loses no steps:
-// each detent advances the counter by 4 (x4 quadrature), consumed in ui_service
-// as one click. Contact bounce self-cancels because it walks the state machine
-// forward then straight back.
-// ---------------------------------------------------------------------------
-static const int8_t QD[16] = { 0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0 };
-static volatile int16_t q_l = 0;
+struct PhzEncoder {
+  uint8_t a = 0xFF, b = 0xFF;
+  void poll(uint8_t pin_a, uint8_t pin_b) {
+    a = (a << 1) | (digitalRead(pin_a) ? 1 : 0);
+    b = (b << 1) | (digitalRead(pin_b) ? 1 : 0);
+  }
+  // Phazerville Read(): edge on A with B low => +1, edge on B with A low => -1.
+  int8_t read() {
+    const uint8_t x = a & 0x03, y = b & 0x03;
+    if (x == 0x02 && y == 0x00) return 1;
+    if (y == 0x02 && x == 0x00) return -1;
+    return 0;
+  }
+};
+
+struct PhzButton {
+  uint8_t s = 0xFF;
+  void init(uint8_t pin) { pinMode(pin, INPUT_PULLUP); s = 0xFF; }
+  void poll(uint8_t pin) { s = (s << 1) | (digitalRead(pin) ? 1 : 0); }
+  bool pressed()      const { return s == 0x00; }  // held, debounced
+  bool just_pressed() const { return s == 0x80; }  // first clean press sample
+  bool released()     const { return s == 0x7F; }  // first clean release sample
+};
+
+static PhzEncoder enc_l;
 #if HAS_RIGHT_ENC
-static volatile int16_t q_r = 0;
-static uint8_t q_prev_l = 0xFF, q_prev_r = 0xFF;
+static PhzEncoder enc_r;
+#endif
+static PhzButton btn_enc_sw, btn_b2;
+#if HAS_RIGHT_ENC
+static PhzButton btn_enc_r_sw;
+#endif
+#if HAS_BOTTOM_BTN
+static PhzButton btn_b1;
+#endif
+static uint32_t enc_sw_down_tick = 0;
+#if HAS_RIGHT_ENC
+static uint32_t enc_r_sw_down_tick = 0;
+static bool enc_r_sw_handled = false;
 #else
-static uint8_t q_prev_l = 0xFF;
+static uint32_t b2_down_tick = 0;
 #endif
-static void enc_l_isr();
-#if HAS_RIGHT_ENC
-static void enc_r_isr();
-#endif
+#define kLongPressTicks 500u
 
 static uint8_t ch_of_page() { return page - 1; }
 static bool is_master() { return page == 0; }
@@ -478,31 +509,23 @@ static void oled_probe(uint8_t addr) {
 #endif
 
 void ui_init() {
+  btn_enc_sw.init(PIN_ENC_SW);
+  btn_b2.init(PIN_BTN_B2);
+#if HAS_RIGHT_ENC
+  btn_enc_r_sw.init(PIN_ENC_R_SW);
+#endif
+#if HAS_BOTTOM_BTN
+  btn_b1.init(PIN_BTN_B1);
+#endif
+  // Encoder A/B pins get INPUT_PULLUP via the poll path; set them here so the
+  // first shift-register samples are valid.
   pinMode(PIN_ENC_A, INPUT_PULLUP);
   pinMode(PIN_ENC_B, INPUT_PULLUP);
-  pinMode(PIN_ENC_SW, INPUT_PULLUP);
-  pinMode(PIN_BTN_B2, INPUT_PULLUP);
 #if HAS_RIGHT_ENC
   pinMode(PIN_ENC_R_A, INPUT_PULLUP);
   pinMode(PIN_ENC_R_B, INPUT_PULLUP);
-  pinMode(PIN_ENC_R_SW, INPUT_PULLUP);
-#endif
-#if HAS_BOTTOM_BTN
-  pinMode(PIN_BTN_B1, INPUT_PULLUP);
-#endif
-  q_prev_l = (digitalRead(PIN_ENC_A) ? 2 : 0) | (digitalRead(PIN_ENC_B) ? 1 : 0);
-#if HAS_RIGHT_ENC
-  q_prev_r = (digitalRead(PIN_ENC_R_A) ? 2 : 0) | (digitalRead(PIN_ENC_R_B) ? 1 : 0);
 #endif
   param_idx = 0;
-
-  // Attach quadrature edge interrupts only once the pins are read/settled.
-  attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), enc_l_isr, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(PIN_ENC_B), enc_l_isr, CHANGE);
-#if HAS_RIGHT_ENC
-  attachInterrupt(digitalPinToInterrupt(PIN_ENC_R_A), enc_r_isr, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(PIN_ENC_R_B), enc_r_isr, CHANGE);
-#endif
 
 #if IS_O_C
   // dac_init() already ran SPI.begin(); panel init needs no address
@@ -556,6 +579,7 @@ static void page_next() {
   page = (page + 1) % (NUM_OUTPUTS + 2);
   param_idx = 0;
 }
+#if HAS_RIGHT_ENC
 static void page_prev() {
   page = (page + (NUM_OUTPUTS + 2) - 1) % (NUM_OUTPUTS + 2);
   param_idx = 0;
@@ -576,120 +600,76 @@ static void select_rel(int8_t d) {
   else if (n >= (int8_t)param_count()) { page_next(); param_idx = 0; }
   else param_idx = n;
 }
-
-// ---- encoder ISRs: quadrature decode, counter only (no shared-state work) --
-static void enc_l_isr() {
-  uint8_t a = digitalRead(PIN_ENC_A) ? 1 : 0;
-  uint8_t b = digitalRead(PIN_ENC_B) ? 1 : 0;
-  uint8_t st = b | (a << 1);
-  if (q_prev_l != 0xFF) q_l += QD[(q_prev_l << 2) | st];
-  q_prev_l = st;
-}
-#if HAS_RIGHT_ENC
-static void enc_r_isr() {
-  uint8_t a = digitalRead(PIN_ENC_R_A) ? 1 : 0;
-  uint8_t b = digitalRead(PIN_ENC_R_B) ? 1 : 0;
-  uint8_t st = b | (a << 1);
-  if (q_prev_r != 0xFF) q_r += QD[(q_prev_r << 2) | st];
-  q_prev_r = st;
-}
 #endif
 
+// Poll all encoder + button pins once per 1 kHz tick, exactly like Phazerville's
+// UI::Encoder::Poll / UI::Button::Poll feeding ui.Poll() at OC_UI_TIMER_RATE.
 void ui_service() {
-  uint32_t now = millis();
+  ui_ticks++;
 
-  // Drain whole detents (x4 quadrature) with interrupts briefly off so an
-  // arriving edge can't race the read-modify-write. Shared state is only
-  // touched here in the control-tick context, never in the ISR.
-  int8_t ld, rd;
-  {
-    noInterrupts();
-    int16_t l = q_l; int8_t ln = l / 4; q_l = l - ln * 4;
-    if (ln > 8) ln = 8;
-    if (ln < -8) ln = -8;
+  enc_l.poll(PIN_ENC_A, PIN_ENC_B);
+  btn_enc_sw.poll(PIN_ENC_SW);
 #if HAS_RIGHT_ENC
-    int16_t r = q_r; int8_t rn = r / 4; q_r = r - rn * 4;
-    if (rn > 8) rn = 8;
-    if (rn < -8) rn = -8;
-#else
-    int8_t rn = 0;
+  enc_r.poll(PIN_ENC_R_A, PIN_ENC_R_B);
+  btn_enc_r_sw.poll(PIN_ENC_R_SW);
 #endif
-    interrupts();
-    ld = ln; rd = rn;
-  }
-  while (ld > 0) { adjust(1); ld--; }
-  while (ld < 0) { adjust(-1); ld++; }
-#if HAS_RIGHT_ENC
-  while (rd > 0) { select_rel(1); rd--; }
-  while (rd < 0) { select_rel(-1); rd++; }
+  btn_b2.poll(PIN_BTN_B2);
+#if HAS_BOTTOM_BTN
+  btn_b1.poll(PIN_BTN_B1);
 #endif
 
+  // LEFT encoder = edit the selected value.
+  int8_t dl = enc_l.read();
+  while (dl > 0) { adjust(1); dl--; }
+  while (dl < 0) { adjust(-1); dl++; }
+
 #if HAS_RIGHT_ENC
-  // O_C dual-knob scheme:
-  //   LEFT turn  = edit selected value (hold LEFT push = fine steps, live in adjust())
-  //   RIGHT turn = select param / wrap into pages
-  //   RIGHT push tap = run/stop (or execute highlighted action on SYS page)
-  //   RIGHT push hold = reset channel phases
-  //   TOP button = next page, BOTTOM button = prev page
-  static uint32_t rsw_down_ms = 0, rsw_up_ms = 0;
-  static bool rsw_handled = false;
-  if (digitalRead(PIN_ENC_R_SW) == LOW) {
-    if (!rsw_down_ms && (uint32_t)(now - rsw_up_ms) > 30) { rsw_down_ms = now; rsw_handled = false; }
-    else if (!rsw_handled && rsw_down_ms && now - rsw_down_ms > 600 && !is_sys()) {
-      channels_reset(); rsw_handled = true;
-    }
-  } else if (rsw_down_ms) {
-    if (!rsw_handled) {
-      if (is_sys()) pending_action = param_idx;
-      else { masterClock.running = !masterClock.running; mark_dirty(); }
-    }
-    rsw_down_ms = 0;
-    rsw_up_ms = now;
+  // RIGHT encoder = select param / wrap into pages.
+  int8_t dr = enc_r.read();
+  while (dr > 0) { select_rel(1); dr--; }
+  while (dr < 0) { select_rel(-1); dr++; }
+#endif
+
+  // Buttons change pages on release (tap). Encoder pushes: LEFT fine-step is
+  // read live in adjust(); its tap cycles params. RIGHT push tap = run/stop
+  // (or SYS execute), hold = reset phases.
+  if (btn_enc_sw.just_pressed()) enc_sw_down_tick = ui_ticks;
+  else if (btn_enc_sw.released()) {
+    if (is_sys()) pending_action = param_idx;
+    else if (ui_ticks - enc_sw_down_tick < kLongPressTicks) param_idx = (param_idx + 1) % param_count();
   }
 
-  // Two buttons: top = next page, bottom = prev page.
-  static uint32_t b2_up_ms = 0;
-  static bool b2_was = false;
-  bool top = digitalRead(PIN_BTN_B2) == LOW;
-  if (top && !b2_was && (uint32_t)(now - b2_up_ms) > 30) b2_was = true;
-  else if (!top && b2_was) { page_next(); b2_was = false; b2_up_ms = now; }
+#if HAS_RIGHT_ENC
+  if (btn_enc_r_sw.just_pressed()) { enc_r_sw_down_tick = ui_ticks; enc_r_sw_handled = false; }
+  else if (btn_enc_r_sw.pressed() && !enc_r_sw_handled
+           && ui_ticks - enc_r_sw_down_tick == kLongPressTicks && !is_sys()) {
+    channels_reset(); enc_r_sw_handled = true;
+  } else if (btn_enc_r_sw.released() && !enc_r_sw_handled) {
+    if (is_sys()) pending_action = param_idx;
+    else { masterClock.running = !masterClock.running; mark_dirty(); }
+  }
 
-  static uint32_t b1_up_ms = 0;
-  static bool b1_was = false;
-  bool bot = digitalRead(PIN_BTN_B1) == LOW;
-  if (bot && !b1_was && (uint32_t)(now - b1_up_ms) > 30) b1_was = true;
-  else if (!bot && b1_was) { page_prev(); b1_was = false; b1_up_ms = now; }
+  // TOP button = next page, BOTTOM button = prev page.
+  if (btn_b2.released()) page_next();
+#if HAS_BOTTOM_BTN
+  if (btn_b1.released()) page_prev();
+#endif
 #else
-  // DIY single-encoder fallback: LEFT encoder does value + param, hold = page.
-  static uint32_t sw_down_ms = 0, sw_up_ms = 0;
-  static bool sw_handled = false;
-  if (digitalRead(PIN_ENC_SW) == LOW) {
-    if (!sw_down_ms && (uint32_t)(now - sw_up_ms) > 30) { sw_down_ms = now; sw_handled = false; }
-    else if (!sw_handled && sw_down_ms && now - sw_down_ms > 500) {
-      page_next(); sw_handled = true;
-    }
-  } else if (sw_down_ms) {
-    if (!sw_handled) {
-      if (is_sys()) pending_action = param_idx;
-      else param_idx = (param_idx + 1) % param_count();
-    }
-    sw_down_ms = 0;
-    sw_up_ms = now;
+  // DIY single-encoder: LEFT encoder does value + param; hold = next page.
+  // B2: tap = run (if stopped) else reset phases; hold = start/stop toggle.
+  if (btn_enc_sw.just_pressed()) enc_sw_down_tick = ui_ticks;
+  else if (btn_enc_sw.pressed() && ui_ticks - enc_sw_down_tick == kLongPressTicks) {
+    page_next(); enc_sw_down_tick = ui_ticks + kLongPressTicks;  // fire once per hold
+  } else if (btn_enc_sw.released()) {
+    if (is_sys()) pending_action = param_idx;
+    else if (ui_ticks - enc_sw_down_tick < kLongPressTicks) param_idx = (param_idx + 1) % param_count();
   }
 
-  static uint32_t b2_up_ms2 = 0;
-  bool b2 = digitalRead(PIN_BTN_B2) == LOW;
-  if (b2 && !b2_was_down && (uint32_t)(now - b2_up_ms2) > 30) { b2_down_ms = now; b2_was_down = true; }
-  else if (!b2 && b2_was_down) b2_up_ms2 = now;
-  if (b2) {
-    if (now - b2_down_ms > 600 && b2_was_down) {
-      masterClock.running = !masterClock.running; mark_dirty(); b2_was_down = false;
-    }
-  } else if (b2_was_down) {
-    if (now - b2_down_ms < 600) {
-      if (!masterClock.running) masterClock.running = true; else channels_reset();
-    }
-    b2_was_down = false;
+  if (btn_b2.just_pressed()) b2_down_tick = ui_ticks;
+  else if (btn_b2.pressed() && ui_ticks - b2_down_tick == kLongPressTicks) {
+    masterClock.running = !masterClock.running; mark_dirty();
+  } else if (btn_b2.released() && ui_ticks - b2_down_tick < kLongPressTicks) {
+    if (!masterClock.running) masterClock.running = true; else channels_reset();
   }
 #endif
 }
