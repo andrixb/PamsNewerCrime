@@ -57,7 +57,7 @@ jobs:
           git checkout -B "$DEFAULT_BRANCH" "origin/$DEFAULT_BRANCH"
           mkdir -p docs/firmware
           cp dist/*.hex docs/firmware/
-          if git diff --quiet -- docs/firmware; then echo "unchanged"; exit 0; fi
+          if [ -z "$(git status --porcelain -- docs/firmware)" ]; then echo "unchanged"; exit 0; fi
           git add docs/firmware
           git commit -m "CI: publish ${{ github.ref_name }} hexes for web flasher"
           git push origin "HEAD:$DEFAULT_BRANCH"
