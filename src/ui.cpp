@@ -630,15 +630,17 @@ void ui_service() {
     else if (is_chan()) param_idx = (param_idx + 1) % param_count();
   }
 
-  // LEFT push: tap = run/stop; hold = open the app menu (channel pages only).
+  // LEFT push: tap = run/stop; hold-release = open the app menu (channel pages).
+  // Opening on release (not during the hold) means this same press cannot also
+  // trip the menu's "released = cancel" check, which would flash it closed.
   if (btn_enc_sw.just_pressed()) { enc_r_sw_down_tick = ui_ticks; enc_l_sw_handled = false; }
-  else if (btn_enc_sw.pressed() && !enc_l_sw_handled
-           && ui_ticks - enc_r_sw_down_tick == kLongPressTicks && is_chan()) {
-    app_sel = channels[ch_of_page()].p.mode;
-    app_menu = true;
-    enc_l_sw_handled = true;
-  } else if (btn_enc_sw.released() && !enc_l_sw_handled) {
-    if (is_sys()) pending_action = param_idx;
+  else if (btn_enc_sw.released()) {
+    if (enc_l_sw_handled) { /* consumed by opening */ }
+    else if (ui_ticks - enc_r_sw_down_tick >= kLongPressTicks && is_chan()) {
+      app_sel = channels[ch_of_page()].p.mode;
+      app_menu = true;
+      enc_l_sw_handled = true;
+    } else if (is_sys()) pending_action = param_idx;
     else { masterClock.running = !masterClock.running; mark_dirty(); }
   }
 
@@ -672,16 +674,21 @@ void ui_draw() {
     gfx->setCursor(0, 0);
     gfx->printf("OUT%d %s", ch + 1, MODE_NAMES[channels[ch].p.mode]);
     if (app_menu) {
+      // GFX glyphs are 8px tall, so rows must step by 8 or they overlap. 11 modes
+      // don't fit, so keep a 6-row window centred on the highlighted entry.
       gfx->setCursor(96, 0);
       gfx->printf("[%d]", ch + 1);
-      const uint8_t rows = 7;                 // 6px rows: y 12..48, fits under the bars
+      const int16_t y0 = 12, dy = 8;
+      const uint8_t rows = 6;                 // 6 rows: y 12..52, above the bottom edge
       uint8_t top = 0;
-      if (app_sel >= rows - 1) top = app_sel >= MODE_LAST - 1 ? MODE_LAST - rows : app_sel - 1;
+      if (app_sel + 1 >= rows) {
+        top = (app_sel >= MODE_LAST - 1) ? (MODE_LAST - rows) : (app_sel - rows + 1);
+      }
       for (uint8_t r = 0; r < rows; r++) {
         uint8_t m = top + r;
         if (m >= MODE_LAST) break;
-        int16_t y = 12 + r * 6;
-        if (m == app_sel) { gfx->fillRect(0, y - 1, 128, 6, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
+        int16_t y = y0 + r * dy;
+        if (m == app_sel) { gfx->fillRect(0, y, 128, 8, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
         gfx->setCursor(2, y);
         gfx->printf("%s", MODE_NAMES[m]);
         if (m == app_sel) gfx->setTextColor(PNC_WHITE);
@@ -699,18 +706,10 @@ void ui_draw() {
       gfx->printf("%s", SYS_ACTIONS[i]);
       if (i == param_idx) gfx->setTextColor(PNC_WHITE);
     }
-  } else if (is_master()) {
-    uint8_t cnt = param_count();
-    for (uint8_t i = 0; i < cnt; i++) {
-      int16_t y = 12 + i * 14;
-      if (i == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
-      gfx->setCursor(0, y);
-      gfx->printf("%-9s", label_of(ch, i));
-      fmt_val(ch, i, buf, sizeof(buf));
-      gfx->printf("%s", buf);
-      if (i == param_idx) gfx->setTextColor(PNC_WHITE);
-    }
   } else {
+    // Master and channel pages share one 3-row scrolling window (y 12/26/40),
+    // clear of the voltage bars at y52. Master indices are raw 0..3; channel
+    // positions map through the app's parameter table.
     uint8_t cnt = param_count();
     const uint8_t rows = 3;
     uint8_t top = 0;
@@ -720,7 +719,7 @@ void ui_draw() {
     for (uint8_t r = 0; r < rows; r++) {
       uint8_t i_pos = top + r;
       if (i_pos >= cnt) break;
-      uint8_t raw = raw_idx(i_pos);
+      uint8_t raw = is_master() ? i_pos : raw_idx(i_pos);
       int16_t y = 12 + r * 14;
       if (i_pos == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
       gfx->setCursor(0, y);
