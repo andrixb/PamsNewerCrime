@@ -7,9 +7,7 @@ ops and chaos waves, all synced to a master clock (internal or external TRS), wi
 musical ratios including odd/prime divisions, Euclidean patterns, phase/delay/swing,
 probability, cross-channel CV routing, banks and power-off persistence.
 
-The name is a nod: the "C" continues the ornament-&-crime lineage (O_C / H1200
-clocked-modulation apps), and everything else is left to the imagination. The
-implementation is original code, written from scratch for Teensy 4 hardware.
+The implementation is original code, written from scratch for Teensy 4 hardware.
 
 > **Full documentation lives in the [Wiki](docs/wiki/Home.md)** — an
 > [overview](docs/wiki/Overview.md), plus deep dives on every

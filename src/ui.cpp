@@ -81,6 +81,9 @@ static PncSpiOled oled_spi;
 static Adafruit_GFX *gfx = &oled_spi;
 #define PNC_BLACK 0
 #define PNC_WHITE 1
+// Left text column ends and the right output-meter column begins here. All text,
+// selection highlights and group labels stay strictly left of METR_X.
+#define METR_X 88
 static bool display_ok = false;
 
 extern Channel channels[NUM_OUTPUTS];
@@ -713,8 +716,11 @@ void ui_draw() {
     gfx->printf("M %d.%02d %s", masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
                 masterClock.source ? "EXT" : "INT");
     if (masterClock.source && masterClock.measured_bpm_cent()) {
-      gfx->setCursor(80, 0);
+      gfx->fillRect(METR_X - 30, 0, 30, 8, PNC_WHITE);
+      gfx->setTextColor(PNC_BLACK);
+      gfx->setCursor(METR_X - 30, 0);
       gfx->printf("%d.%02d", masterClock.measured_bpm_cent() / 100, masterClock.measured_bpm_cent() % 100);
+      gfx->setTextColor(PNC_WHITE);
     }
   } else if (is_sys()) {
     gfx->setCursor(0, 0);
@@ -726,9 +732,10 @@ void ui_draw() {
       gfx->printf("PICK APP OUT%d", ch + 1);
     } else {
       gfx->printf("OUT%d %s", ch + 1, MODE_NAMES[gm]);
-      // Right-align the current group name of the highlighted param.
+      // Group name, right-aligned to the LEFT edge of the meter column so it
+      // never draws over the bars.
       const char *grp = app_param_group(gm, param_idx, channels[ch].p.step_len);
-      gfx->setCursor(128 - 6 * (int8_t)strlen(grp), 0);
+      gfx->setCursor(METR_X - 6 * (int8_t)strlen(grp) - 1, 0);
       gfx->printf("%s", grp);
     }
   }
@@ -769,12 +776,11 @@ void ui_draw() {
     return;   // no output meter on the SYS page
   }
 
-  // Master and channel pages: a 3-row scrolling list on the left, a tall vertical
-  // output meter panel on the right. The list and its selection highlight stay left
-  // of BAR_X so text never runs under the bars.
-  const uint8_t BAR_X = 88;            // right meter column starts here
-  const uint8_t BAR_TOP = 12, BAR_BOT = 60;
-  const uint8_t text_w = BAR_X;        // selectable text strip width
+  // Master and channel pages: a 3-row scrolling list on the LEFT (x < METR_X),
+  // a self-contained output meter on the RIGHT (x >= METR_X). The two zones never
+  // overlap: text/highlights are clipped to the left column, and the meter box
+  // plus its gate strip live entirely inside the right column's rows 9..62.
+  const uint8_t text_w = METR_X - 2;   // selectable text strip width (2px gutter)
   uint8_t cnt = param_count();
   const uint8_t rows = 3;
   uint8_t top = 0;
@@ -788,36 +794,46 @@ void ui_draw() {
     int16_t y = 12 + r * 14;
     if (i_pos == param_idx) { gfx->fillRect(0, y - 1, text_w, 12, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
     gfx->setCursor(0, y);
-    gfx->printf("%-8s", label_of(ch, raw));
+    gfx->printf("%-7s", label_of(ch, raw));      // 7*6=42px, leaves room for the value
     fmt_val(ch, raw, buf, sizeof(buf));
+    buf[6] = 0;                                  // clamp value to ~ (42+6*6) < text_w
     gfx->printf("%s", buf);
     if (i_pos == param_idx) gfx->setTextColor(PNC_WHITE);
   }
 
-  // Right-side output meter: one tall bar per output, with a gate strip beneath.
-  // Each bar is normalized to that channel's own cv_min..cv_max span, so a
-  // full-scale signal fills the column top-to-bottom. The fill is drawn strictly
-  // 1px inside the box border on every side, so it can never spill outside it.
-  uint8_t bw = (128 - BAR_X) / NUM_OUTPUTS;
-  const int16_t box_top = BAR_TOP;
-  const int16_t box_bot = BAR_BOT;                 // exclusive: box occupies [top,bot)
-  const int16_t in_top = box_top + 1;              // interior (fill area) rows
-  const int16_t in_bot = box_bot - 1;              // exclusive
-  const int16_t inner_h = in_bot - in_top;         // fillable pixel rows
+  // Right-side output meter: one tall bar per output. Normalized to each channel's
+  // cv_min..cv_max so full-scale fills the column. Everything (border, fill, and a
+  // gate strip drawn INSIDE the box at its base) stays within rows 9..62 and
+  // columns METR_X..127, with a bottom margin so nothing runs off-screen.
+  const int16_t mx = (int16_t)METR_X;
+  const int16_t col_w = 128 - mx;                // usable width for the meter
+  const int16_t bw = col_w / NUM_OUTPUTS;        // per-bar pitch
+  const int16_t box_top = 9, box_bot = 62;       // box occupies rows 9..61 inclusive
+  const int16_t in_l = 1;                        // left inset inside each cell
+  const int16_t cell_w = bw - 2;                 // drawn width (1px gap each side)
+  const int16_t gate_h = 3;                      // gate strip height, at the base
+  const int16_t gate_bot = box_bot - 1;          // gate band bottom row (61)
+  const int16_t gate_top = gate_bot - gate_h + 1;// gate band top row (59)
+  const int16_t lvl_base = gate_top;              // level rises from here upward
+  const int16_t lvl_top = box_top + 1;           // level ceiling
+  const int16_t lvl_h = lvl_base - lvl_top;      // fillable rows for the level
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
-    int16_t x = BAR_X + i * bw;
-    gfx->drawRect(x, box_top, bw - 1, box_bot - box_top, PNC_WHITE);
+    int16_t x = mx + i * bw + in_l;
+    gfx->drawRect(x, box_top, cell_w, box_bot - box_top, PNC_WHITE);
     int32_t lo = channels[i].p.cv_min, hi = channels[i].p.cv_max;
     int32_t mv = (int32_t)channels[i].out_mv;
     int32_t span = hi - lo;
     int32_t h = 0;
-    if (span > 0) {
-      h = (mv - lo) * inner_h / span;
+    if (span > 0 && lvl_h > 0) {
+      h = (mv - lo) * lvl_h / span;
       if (h < 0) h = 0;
-      if (h > inner_h) h = inner_h;
+      if (h > lvl_h) h = lvl_h;
     }
-    if (h) gfx->fillRect(x + 1, in_bot - h, bw - 3, h, PNC_WHITE);
-    if (channels[i].gate_state) gfx->fillRect(x + 1, box_bot, bw - 3, 2, PNC_WHITE);
+    // level occupies rows [lvl_base-h, lvl_base-1]; never enters the gate band.
+    if (h) gfx->fillRect(x + 1, lvl_base - h, cell_w - 2, h, PNC_WHITE);
+    // gate indicator: a solid band at the base, inside the box.
+    if (channels[i].gate_state)
+      gfx->fillRect(x + 1, gate_top, cell_w - 2, gate_h, PNC_WHITE);
   }
   oled_flush();
 }
