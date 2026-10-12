@@ -55,7 +55,13 @@
 #define PIN_ENC_A 22
 #define PIN_ENC_B 21
 #define PIN_ENC_SW 23
-#define PIN_BTN_B2 5      // O_C top button (pin 4 = bottom, unused)
+#define PIN_ENC_R_A 16
+#define PIN_ENC_R_B 15
+#define PIN_ENC_R_SW 14
+#define PIN_BTN_B2 5      // O_C top button
+#define PIN_BTN_B1 4      // O_C bottom button
+#define HAS_RIGHT_ENC 1
+#define HAS_BOTTOM_BTN 1
 #define PIN_CK_IN 0       // TR1
 
 #define PIN_CV_IN1 A3     // CV1
@@ -80,6 +86,8 @@
 #define PIN_ENC_B 5
 #define PIN_ENC_SW 6
 #define PIN_BTN_B2 2
+#define HAS_RIGHT_ENC 0
+#define HAS_BOTTOM_BTN 0
 #define PIN_CK_IN 3
 
 #define PIN_CV_IN1 A0

@@ -61,8 +61,9 @@ It uses the exact pin map of the O_C family (verified against Phazerville):
 |----------|----------------|----------|
 | OLED CS / DC / RST | 8 / 6 / 7 | SH1106 SPI panel |
 | DAC CS / RST | 10 / 9 | DAC8565 (outputs 1-4, 0-10 V) |
-| Encoder A / B / push | 22 / 21 / 23 | left encoder |
-| Button B2 | 5 | top button (4 = bottom, unused) |
+| Left encoder A / B / push | 22 / 21 / 23 | left encoder |
+| Right encoder A / B / push | 16 / 15 / 14 | right encoder |
+| Buttons top / bottom | 5 / 4 | two panel buttons |
 | Clock input | 0 | TR1 jack (active-low triggers) |
 | CV in 1 / 2 | A3 / A4 (CV1/CV2 jacks) | bipolar, 0 V = mid |
 
@@ -120,11 +121,19 @@ and the measured tempo.
 
 ## Controls
 
-- **Encoder** — change selected parameter (turn while pressing = fine steps for BPM / voltage)
-- **Encoder press** — next parameter; **hold press** — next page
-- **B2 tap** — reset all channel phases (clock reset)
-- **B2 hold** — start/stop master clock
+O_C dual-knob panel (both knobs and both buttons are wired and live):
+
+- **Left encoder** — change the selected parameter's value (hold its push while
+  turning = fine steps for BPM / voltage)
+- **Right encoder** — select the parameter; rolling past either end wraps into
+  the neighbouring page
+- **Right encoder push** — tap = start/stop master clock (on the SYS page: run
+  the highlighted action); hold = reset all channel phases
+- **Top button** — next page · **Bottom button** — previous page
 - Pages: `M` (master), `OUT1..N`, `SYS`
+
+DIY single-encoder profile: left encoder edits values, its press steps
+parameters, holding it changes page; **B2** tap resets phases, hold runs/stops.
 - Master page params: `BPM`, `clock` (int / ext / midi), `ext ppqn`, `run`
 
 Channel page params, in order: `ratio`, `mode`, `wave`, `width`, `skew`, `cv min`,

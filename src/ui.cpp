@@ -150,9 +150,33 @@ static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A"
 static uint8_t page = 0;
 static uint8_t param_idx = 0;
 
-static uint8_t enc_state = 0;
+#if !HAS_RIGHT_ENC
 static uint32_t b2_down_ms = 0;
 static bool b2_was_down = false;
+#endif
+
+// ---------------------------------------------------------------------------
+// Quadrature encoders, decoded in a pin-change ISR (both A and B edges).
+// The old design polled the two pins once per 1 kHz tick and required a new
+// state to be stable for 2 ms before accepting it; turn the knob a little fast
+// and whole detents were dropped, and the noInterrupts() window in the OLED
+// flush stalled the poll entirely. A hardware edge interrupt loses no steps:
+// each detent advances the counter by 4 (x4 quadrature), consumed in ui_service
+// as one click. Contact bounce self-cancels because it walks the state machine
+// forward then straight back.
+// ---------------------------------------------------------------------------
+static const int8_t QD[16] = { 0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0 };
+static volatile int16_t q_l = 0;
+#if HAS_RIGHT_ENC
+static volatile int16_t q_r = 0;
+static uint8_t q_prev_l = 0xFF, q_prev_r = 0xFF;
+#else
+static uint8_t q_prev_l = 0xFF;
+#endif
+static void enc_l_isr();
+#if HAS_RIGHT_ENC
+static void enc_r_isr();
+#endif
 
 static uint8_t ch_of_page() { return page - 1; }
 static bool is_master() { return page == 0; }
@@ -458,8 +482,27 @@ void ui_init() {
   pinMode(PIN_ENC_B, INPUT_PULLUP);
   pinMode(PIN_ENC_SW, INPUT_PULLUP);
   pinMode(PIN_BTN_B2, INPUT_PULLUP);
-  enc_state = (digitalRead(PIN_ENC_B) ? 1 : 0) | (digitalRead(PIN_ENC_A) ? 2 : 0);
+#if HAS_RIGHT_ENC
+  pinMode(PIN_ENC_R_A, INPUT_PULLUP);
+  pinMode(PIN_ENC_R_B, INPUT_PULLUP);
+  pinMode(PIN_ENC_R_SW, INPUT_PULLUP);
+#endif
+#if HAS_BOTTOM_BTN
+  pinMode(PIN_BTN_B1, INPUT_PULLUP);
+#endif
+  q_prev_l = (digitalRead(PIN_ENC_A) ? 2 : 0) | (digitalRead(PIN_ENC_B) ? 1 : 0);
+#if HAS_RIGHT_ENC
+  q_prev_r = (digitalRead(PIN_ENC_R_A) ? 2 : 0) | (digitalRead(PIN_ENC_R_B) ? 1 : 0);
+#endif
   param_idx = 0;
+
+  // Attach quadrature edge interrupts only once the pins are read/settled.
+  attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), enc_l_isr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PIN_ENC_B), enc_l_isr, CHANGE);
+#if HAS_RIGHT_ENC
+  attachInterrupt(digitalPinToInterrupt(PIN_ENC_R_A), enc_r_isr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PIN_ENC_R_B), enc_r_isr, CHANGE);
+#endif
 
 #if IS_O_C
   // dac_init() already ran SPI.begin(); panel init needs no address
@@ -509,35 +552,121 @@ static void adjust(int8_t d) {
   set_val(ch, param_idx, v + d * step);
 }
 
-void ui_service() {
-  uint32_t now = millis();
+static void page_next() {
+  page = (page + 1) % (NUM_OUTPUTS + 2);
+  param_idx = 0;
+}
+static void page_prev() {
+  page = (page + (NUM_OUTPUTS + 2) - 1) % (NUM_OUTPUTS + 2);
+  param_idx = 0;
+}
 
+// RIGHT encoder turn moves the selection; rolling past the end of a page's
+// params wraps into the next page (and the start wraps back to the previous).
+static void select_rel(int8_t d) {
+  if (is_sys()) {
+    int8_t n = (int8_t)param_idx + d;
+    if (n < 0) n = 0;
+    if (n >= (int8_t)SYS_ACTION_COUNT) n = SYS_ACTION_COUNT - 1;
+    param_idx = n;
+    return;
+  }
+  int8_t n = (int8_t)param_idx + d;
+  if (n < 0) { page_prev(); param_idx = param_count() - 1; }
+  else if (n >= (int8_t)param_count()) { page_next(); param_idx = 0; }
+  else param_idx = n;
+}
+
+// ---- encoder ISRs: quadrature decode, counter only (no shared-state work) --
+static void enc_l_isr() {
   uint8_t a = digitalRead(PIN_ENC_A) ? 1 : 0;
   uint8_t b = digitalRead(PIN_ENC_B) ? 1 : 0;
   uint8_t st = b | (a << 1);
-  static const int8_t LOOKUP[16] = { 0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0 };
-  // settle filter: accept a new quadrature state only after it is stable
-  // for 2 ms, so contact bounce and mid-flight samples can't fake a step
-  static uint8_t enc_raw = 0xFF;
-  static uint32_t enc_raw_ms = 0;
-  if (st != enc_raw) {
-    enc_raw = st;
-    enc_raw_ms = now;
-  } else if (st != enc_state && (uint32_t)(now - enc_raw_ms) >= 2) {
-    int8_t d = LOOKUP[(enc_state << 2) | st];
-    if (d) adjust(d);
-    enc_state = st;
+  if (q_prev_l != 0xFF) q_l += QD[(q_prev_l << 2) | st];
+  q_prev_l = st;
+}
+#if HAS_RIGHT_ENC
+static void enc_r_isr() {
+  uint8_t a = digitalRead(PIN_ENC_R_A) ? 1 : 0;
+  uint8_t b = digitalRead(PIN_ENC_R_B) ? 1 : 0;
+  uint8_t st = b | (a << 1);
+  if (q_prev_r != 0xFF) q_r += QD[(q_prev_r << 2) | st];
+  q_prev_r = st;
+}
+#endif
+
+void ui_service() {
+  uint32_t now = millis();
+
+  // Drain whole detents (x4 quadrature) with interrupts briefly off so an
+  // arriving edge can't race the read-modify-write. Shared state is only
+  // touched here in the control-tick context, never in the ISR.
+  int8_t ld, rd;
+  {
+    noInterrupts();
+    int16_t l = q_l; int8_t ln = l / 4; q_l = l - ln * 4;
+    if (ln > 8) ln = 8;
+    if (ln < -8) ln = -8;
+#if HAS_RIGHT_ENC
+    int16_t r = q_r; int8_t rn = r / 4; q_r = r - rn * 4;
+    if (rn > 8) rn = 8;
+    if (rn < -8) rn = -8;
+#else
+    int8_t rn = 0;
+#endif
+    interrupts();
+    ld = ln; rd = rn;
+  }
+  while (ld > 0) { adjust(1); ld--; }
+  while (ld < 0) { adjust(-1); ld++; }
+#if HAS_RIGHT_ENC
+  while (rd > 0) { select_rel(1); rd--; }
+  while (rd < 0) { select_rel(-1); rd++; }
+#endif
+
+#if HAS_RIGHT_ENC
+  // O_C dual-knob scheme:
+  //   LEFT turn  = edit selected value (hold LEFT push = fine steps, live in adjust())
+  //   RIGHT turn = select param / wrap into pages
+  //   RIGHT push tap = run/stop (or execute highlighted action on SYS page)
+  //   RIGHT push hold = reset channel phases
+  //   TOP button = next page, BOTTOM button = prev page
+  static uint32_t rsw_down_ms = 0, rsw_up_ms = 0;
+  static bool rsw_handled = false;
+  if (digitalRead(PIN_ENC_R_SW) == LOW) {
+    if (!rsw_down_ms && (uint32_t)(now - rsw_up_ms) > 30) { rsw_down_ms = now; rsw_handled = false; }
+    else if (!rsw_handled && rsw_down_ms && now - rsw_down_ms > 600 && !is_sys()) {
+      channels_reset(); rsw_handled = true;
+    }
+  } else if (rsw_down_ms) {
+    if (!rsw_handled) {
+      if (is_sys()) pending_action = param_idx;
+      else { masterClock.running = !masterClock.running; mark_dirty(); }
+    }
+    rsw_down_ms = 0;
+    rsw_up_ms = now;
   }
 
-  static uint32_t sw_down_ms = 0;
-  static uint32_t sw_up_ms = 0;
+  // Two buttons: top = next page, bottom = prev page.
+  static uint32_t b2_up_ms = 0;
+  static bool b2_was = false;
+  bool top = digitalRead(PIN_BTN_B2) == LOW;
+  if (top && !b2_was && (uint32_t)(now - b2_up_ms) > 30) b2_was = true;
+  else if (!top && b2_was) { page_next(); b2_was = false; b2_up_ms = now; }
+
+  static uint32_t b1_up_ms = 0;
+  static bool b1_was = false;
+  bool bot = digitalRead(PIN_BTN_B1) == LOW;
+  if (bot && !b1_was && (uint32_t)(now - b1_up_ms) > 30) b1_was = true;
+  else if (!bot && b1_was) { page_prev(); b1_was = false; b1_up_ms = now; }
+#else
+  // DIY single-encoder fallback: LEFT encoder does value + param, hold = page.
+  static uint32_t sw_down_ms = 0, sw_up_ms = 0;
   static bool sw_handled = false;
   if (digitalRead(PIN_ENC_SW) == LOW) {
     if (!sw_down_ms && (uint32_t)(now - sw_up_ms) > 30) { sw_down_ms = now; sw_handled = false; }
     else if (!sw_handled && sw_down_ms && now - sw_down_ms > 500) {
-      page = (page + 1) % (NUM_OUTPUTS + 2);
-      param_idx = 0;
-      sw_handled = true;
+      page_next(); sw_handled = true;
     }
   } else if (sw_down_ms) {
     if (!sw_handled) {
@@ -548,23 +677,21 @@ void ui_service() {
     sw_up_ms = now;
   }
 
+  static uint32_t b2_up_ms2 = 0;
   bool b2 = digitalRead(PIN_BTN_B2) == LOW;
-  static uint32_t b2_up_ms = 0;
-  if (b2 && !b2_was_down && (uint32_t)(now - b2_up_ms) > 30) { b2_down_ms = now; b2_was_down = true; }
-  else if (!b2 && b2_was_down) b2_up_ms = now;
+  if (b2 && !b2_was_down && (uint32_t)(now - b2_up_ms2) > 30) { b2_down_ms = now; b2_was_down = true; }
+  else if (!b2 && b2_was_down) b2_up_ms2 = now;
   if (b2) {
     if (now - b2_down_ms > 600 && b2_was_down) {
-      masterClock.running = !masterClock.running;
-      mark_dirty();
-      b2_was_down = false;
+      masterClock.running = !masterClock.running; mark_dirty(); b2_was_down = false;
     }
   } else if (b2_was_down) {
     if (now - b2_down_ms < 600) {
-      if (!masterClock.running) masterClock.running = true;
-      else channels_reset();
+      if (!masterClock.running) masterClock.running = true; else channels_reset();
     }
     b2_was_down = false;
   }
+#endif
 }
 
 void ui_draw() {
