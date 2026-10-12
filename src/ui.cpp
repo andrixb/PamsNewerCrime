@@ -272,6 +272,7 @@ static void do_action(uint8_t idx) {
 }
 
 static bool display_ok = false;
+static uint8_t display_addr = 0;
 
 void ui_init() {
   pinMode(PIN_ENC_A, INPUT_PULLUP);
@@ -282,8 +283,24 @@ void ui_init() {
   param_idx = 0;
 
   Wire.begin();
-  for (uint8_t i = 0; i < 3 && !display_ok; i++) {
-    display_ok = display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS);
+  Wire.setClock(400000);
+  static const uint8_t ADDRS[] = { DISPLAY_ADDRESS, 0x3D };
+  for (uint8_t trial = 0; trial < 6 && !display_ok; trial++) {
+    uint8_t addr = ADDRS[trial % 2];
+    if (display.begin(SSD1306_SWITCHCAPVCC, addr)) {
+      display_ok = true;
+      display_addr = addr;
+    }
+  }
+  Serial.printf("pnc: boot, oled %s (addr 0x%02X)\n",
+                display_ok ? "found" : "NOT FOUND", display_addr);
+  if (!display_ok) {
+    Serial.print("pnc: i2c scan:");
+    for (uint8_t a = 8; a < 120; a++) {
+      Wire.beginTransmission(a);
+      if (Wire.endTransmission() == 0) Serial.printf(" 0x%02X", a);
+    }
+    Serial.println();
   }
   if (!display_ok) return;  // boot without display rather than hanging in setup()
   display.clearDisplay();

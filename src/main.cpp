@@ -74,9 +74,18 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(PIN_CK_IN), ck_isr, RISING);
   ctrl_timer.begin(control_tick, (uint32_t)(1000000 / CONTROL_RATE_HZ));
   ctrl_timer.priority(16);
+  Serial.println("pnc: setup done");
 }
 
+static uint32_t last_beat_ms = 0;
+
 void loop() {
+  uint32_t beat = millis();
+  if (beat - last_beat_ms > 5000) {
+    last_beat_ms = beat;
+    Serial.printf("pnc: alive ticks=%u bpm=%d page=%d\n", tick_count,
+                  masterClock.bpm_cent / 100, ui_current_page());
+  }
   midi_poll();
   ui_run_pending();
   uint32_t now = millis();
