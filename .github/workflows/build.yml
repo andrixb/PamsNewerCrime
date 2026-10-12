@@ -31,8 +31,8 @@ jobs:
       - name: Stage hex files
         run: |
           mkdir -p dist
-          cp .pio/build/teensy40/firmware.hex dist/workout-time-teensy40.hex
-          cp .pio/build/teensy41/firmware.hex dist/workout-time-teensy41.hex
+          cp .pio/build/teensy40/firmware.hex dist/pams-newer-crime-teensy40.hex
+          cp .pio/build/teensy41/firmware.hex dist/pams-newer-crime-teensy41.hex
 
       - uses: actions/upload-artifact@v4
         with:

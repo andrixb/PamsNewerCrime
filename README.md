@@ -1,13 +1,14 @@
-# Workout-Time
+# Pam's Newer Crime
 
-Workout-Time is a programmable, clocked modulation source for eurorack, running on
+*Pam's Newer Crime* (PNC) is a programmable, clocked modulation source for eurorack, running on
 Teensy 4.0 / 4.1. Multiple CV outputs produce pulses, LFOs, ramps, stepped sequences
 and sample & holds, all synced to a BPM-based master clock (internal or externally
 synced), with Euclidean patterns, phase/delay/swing, probability, 2 assignable CV
 inputs, banks and power-off persistence.
 
-The design lineage is the open-source O_C / H1200 clocked-modulation apps; the
-implementation is original code, written from scratch for the Teensy 4 hardware.
+The name is a nod: the "C" continues the ornament-&-crime lineage (O_C / H1200
+clocked-modulation apps), and everything else is left to the imagination. The
+implementation is original code, written from scratch for Teensy 4 hardware.
 
 ## Features
 
@@ -75,7 +76,7 @@ same as Teensy Loader). Flash straight from GitHub Pages:
 1. Push a tag (`v0.1.0`) — CI builds both hexes and attaches them to a GitHub release.
 2. Enable Pages once: repo **Settings -> Pages -> Source: GitHub Actions** is not
    needed; use **Deploy from a branch / main / /docs**.
-3. Open `https://andrixb.github.io/Workout-Time/`, hold the Teensy program button
+3. Open `https://andrixb.github.io/PamsNewerCrime/`, hold the Teensy program button
    ~4 s so the bootloader (16c0:0478) appears, pick the release hex, Flash.
 
 Requirements: Chrome/Edge/Brave over HTTPS (WebHID is not available in
