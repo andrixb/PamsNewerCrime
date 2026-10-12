@@ -432,4 +432,7 @@ void ui_draw() {
 }
 
 uint8_t ui_current_page() { return page; }
+
+bool ui_display_found() { return display_ok; }
+uint8_t ui_display_addr() { return display_addr; }
 uint8_t ui_current_channel() { return is_master() ? 0xFF : ch_of_page(); }

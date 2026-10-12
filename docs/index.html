@@ -69,6 +69,13 @@
     <div id="log"></div>
   </div>
 
+  <h2>4. Debug console (WebSerial)</h2>
+  <div class="card">
+    <button id="conBtn">Connect serial console</button>
+    <span class="dim">shows the running firmware's output @ 115200 baud; power-cycle the board after connecting to see boot diagnostics</span>
+    <pre id="console" style="min-height:80px;max-height:240px;overflow:auto;background:#0d1117;border-radius:6px;padding:8px;margin-top:8px;white-space:pre-wrap"></pre>
+  </div>
+
   <p class="dim">Repo: <a href="https://github.com/andrixb/PamsNewerCrime">andrixb/PamsNewerCrime</a>
   &middot; protocol ported from <a href="https://github.com/PaulStoffregen/teensy_loader_cli">teensy_loader_cli</a> (GPL)</p>
 </div>
@@ -362,6 +369,55 @@ window.addEventListener("deviceondisconnect", e => {
     $("devState").textContent = "disconnected";
     $("devState").className = "dim";
     refreshButtons();
+  }
+});
+
+// ---------- WebSerial debug console ----------
+let conPort = null, conReader = null, conRunning = false;
+
+function conAppend(text) {
+  const el = $("console");
+  el.textContent += text;
+  el.scrollTop = el.scrollHeight;
+}
+
+async function consoleLoop() {
+  const decoder = new TextDecoder();
+  while (conPort && conRunning) {
+    try {
+      conReader = conPort.readable.getReader();
+      while (conRunning) {
+        const { value, done } = await conReader.read();
+        if (done) break;
+        if (value) conAppend(decoder.decode(value, { stream: true }));
+      }
+      conReader.releaseLock();
+    } catch (e) {
+      try { conReader && conReader.releaseLock(); } catch (_) {}
+      if (!conRunning) break;
+      conAppend("[serial error: " + e.message + ", retrying in 1s]\n");
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+}
+
+$("conBtn").addEventListener("click", async () => {
+  if (!navigator.serial) { log("WebSerial not supported in this browser.", "err"); return; }
+  if (conRunning) { conRunning = false; try { await conPort.close(); } catch (_) {} conPort = null; $("conBtn").textContent = "Connect serial console"; return; }
+  try {
+    if (!conPort) {
+      const picked = await navigator.serial.requestPort({
+        filters: [{ usbVendorId: 0x16C0 }]
+      });
+      conPort = picked;
+    }
+    await conPort.open({ baudRate: 115200 });
+    conRunning = true;
+    $("conBtn").textContent = "Disconnect";
+    conAppend("[connected @ 115200]\n");
+    consoleLoop();
+  } catch (e) {
+    conAppend("[failed: " + e.message + "]\n");
   }
 });
 </script>
