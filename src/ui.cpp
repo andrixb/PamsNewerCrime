@@ -488,8 +488,9 @@ void ui_service() {
   btn_b2.poll(PIN_BTN_B2);
   btn_b1.poll(PIN_BTN_B1);
 
-  // RIGHT encoder = edit the selected value.
-  int8_t dr = enc_r.read();
+  // RIGHT encoder = edit the selected value. Its A/B phase is wired opposite to
+  // the left knob, so negate it: clockwise increases, counter-clockwise decreases.
+  int8_t dr = (int8_t)-enc_r.read();
   while (dr > 0) { adjust(1); dr--; }
   while (dr < 0) { adjust(-1); dr++; }
 
