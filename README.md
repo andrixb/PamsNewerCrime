@@ -11,6 +11,12 @@ The name is a nod: the "C" continues the ornament-&-crime lineage (O_C / H1200
 clocked-modulation apps), and everything else is left to the imagination. The
 implementation is original code, written from scratch for Teensy 4 hardware.
 
+> **Full documentation lives in the [Wiki](docs/wiki/Home.md)** — an
+> [overview](docs/wiki/Overview.md), plus deep dives on every
+> [mode](docs/wiki/Modes.md), [parameter](docs/wiki/Parameters.md), the
+> [clock](docs/wiki/Clock-Ratios.md), [CV modulation](docs/wiki/CV-Modulation.md)
+> and more.
+
 ## Features
 
 - 4 CV outputs (O_C quad DAC, `NUM_OUTPUTS=1..4`), each fully independent
@@ -32,7 +38,7 @@ implementation is original code, written from scratch for Teensy 4 hardware.
   - **rwalk** — bounded random walk (RNG out)
 - LFO waves: sine, triangle, saw, square; skew, phase, delay (swing), pulse width
 - Per-output slew/lag (exponential filter; triggers stay sharp)
-- CV min/max range per output, invert, 0-4.09 V full scale
+- CV min/max range per output, invert, 0-10 V full scale (O_C DAC8565)
 - Euclidean rhythm per output (length 1-32, fill, rotation)
 - Probability per event (event skipping)
 - 16-step sequence with per-step values and length
@@ -125,22 +131,24 @@ other Teensy sketches.
 
 ## Building
 
-PlatformIO (recommended):
+PlatformIO (recommended). Two environments, both for genuine O_C hardware
+(`teensy40`, `teensy41`), each 4 outputs (quad DAC8565):
 
 ```
-pio run -e teensy40        # Teensy 4.0, 4 outs, DIY wiring, I2C SSD1306
-pio run -e teensy40_oc     # Teensy 4.0 on genuine O_C / uO_c hardware
-pio run -e teensy41        # Teensy 4.1, 8 outs, DIY wiring
+pio run -e teensy40        # Teensy 4.0, 4 outs, on O_C / uO_c hardware
+pio run -e teensy41        # Teensy 4.1, 4 outs
 pio run -e teensy40 -t upload
 ```
 
-The `teensy40_8out` env shows Teensy 4.0 can also run 8 outputs (4 DAC chips).
+See the [Building wiki page](docs/wiki/Building.md) for configuration flags, the
+source layout, and CI.
 
 ## Notes / current limitations
 
 - Update rate 1 kHz (round-robin-free, all outputs updated every tick)
 - External clock jitter: measured with a smoothed period estimator
-- MIDI **input** only (clock + transport); no MIDI/DIN-sync clock *outputs* yet
+- No MIDI / DIN-sync clock input or output (on O_C, pin 0 is the TR1 clock jack);
+  external sync is via the TR jack only
 - WebHID flasher cannot recover a firmware that hangs before USB init — hold the
   program button ~15 s (orange LED) to force bootloader mode, then reflash; the
   bootloader is in ROM, so the board cannot be hard-bricked
