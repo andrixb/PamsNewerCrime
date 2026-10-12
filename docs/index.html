@@ -185,6 +185,17 @@ async function loadAssets() {
 async function fetchReleaseHex() {
   const url = $("releaseAsset").value;
   if (!url) throw new Error("pick a release asset");
+  const name = url.split("/").pop();
+  // GitHub's release-asset CDN has no CORS headers, so fetching the asset
+  // directly from the browser fails. Prefer the same-origin copy that CI
+  // publishes to Pages (docs/firmware/), fall back to the release URL.
+  try {
+    const local = await fetch("firmware/" + name, { cache: "no-store" });
+    if (local.ok) {
+      log("Downloading " + name + " (same-origin) ...");
+      return await local.text();
+    }
+  } catch (e) { /* fall through to release URL */ }
   log("Downloading " + url + " ...");
   const r = await fetch(url);
   if (!r.ok) throw new Error("download failed: HTTP " + r.status);

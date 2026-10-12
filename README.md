@@ -106,11 +106,16 @@ SYS page: save/load bank A and B, restore defaults (rotate to select, press to e
 `docs/index.html` is a zero-install browser flasher (WebHID + halfkdf protocol,
 same as Teensy Loader). Flash straight from GitHub Pages:
 
-1. Push a tag (`v0.1.0`) — CI builds both hexes and attaches them to a GitHub release.
+1. Push a tag (`v0.1.0`) — CI builds both hexes, attaches them to a GitHub release,
+   and commits copies to `docs/firmware/` (served same-origin, since GitHub's release
+   CDN blocks browser fetches with CORS).
 2. Enable Pages once: repo **Settings -> Pages -> Source: GitHub Actions** is not
    needed; use **Deploy from a branch / main / /docs**.
 3. Open `https://andrixb.github.io/PamsNewerCrime/`, hold the Teensy program button
    ~4 s so the bootloader (16c0:0478) appears, pick the release hex, Flash.
+
+If the release fetch fails (private repo, rate limit, Pages copy not published yet),
+use the **Local file** option: download `*.hex` from the release page and pick it.
 
 Requirements: Chrome/Edge/Brave over HTTPS (WebHID is not available in
 Firefox/Safari or from `file://`). Works with any Teensy 4.0/4.1 board, also for
