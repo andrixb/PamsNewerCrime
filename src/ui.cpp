@@ -794,17 +794,30 @@ void ui_draw() {
     if (i_pos == param_idx) gfx->setTextColor(PNC_WHITE);
   }
 
-  // Right-side output meter: one tall bar per output, filled from the bottom to
-  // the live voltage, with a gate strip beneath.
+  // Right-side output meter: one tall bar per output, with a gate strip beneath.
+  // Each bar is normalized to that channel's own cv_min..cv_max span, so a
+  // full-scale signal fills the column top-to-bottom. The fill is drawn strictly
+  // 1px inside the box border on every side, so it can never spill outside it.
   uint8_t bw = (128 - BAR_X) / NUM_OUTPUTS;
-  uint8_t inner_h = BAR_BOT - BAR_TOP - 2;
+  const int16_t box_top = BAR_TOP;
+  const int16_t box_bot = BAR_BOT;                 // exclusive: box occupies [top,bot)
+  const int16_t in_top = box_top + 1;              // interior (fill area) rows
+  const int16_t in_bot = box_bot - 1;              // exclusive
+  const int16_t inner_h = in_bot - in_top;         // fillable pixel rows
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
-    uint8_t x = BAR_X + i * bw;
-    gfx->drawRect(x, BAR_TOP, bw - 1, BAR_BOT - BAR_TOP, PNC_WHITE);
-    uint32_t mv = channels[i].out_mv;
-    uint8_t h = (uint8_t)((mv * inner_h) / DAC_MAX_MV);
-    if (h) gfx->fillRect(x + 1, BAR_BOT - 1 - h, bw - 3, h, PNC_WHITE);
-    if (channels[i].gate_state) gfx->fillRect(x, BAR_BOT + 2, bw - 1, 2, PNC_WHITE);
+    int16_t x = BAR_X + i * bw;
+    gfx->drawRect(x, box_top, bw - 1, box_bot - box_top, PNC_WHITE);
+    int32_t lo = channels[i].p.cv_min, hi = channels[i].p.cv_max;
+    int32_t mv = (int32_t)channels[i].out_mv;
+    int32_t span = hi - lo;
+    int32_t h = 0;
+    if (span > 0) {
+      h = (mv - lo) * inner_h / span;
+      if (h < 0) h = 0;
+      if (h > inner_h) h = inner_h;
+    }
+    if (h) gfx->fillRect(x + 1, in_bot - h, bw - 3, h, PNC_WHITE);
+    if (channels[i].gate_state) gfx->fillRect(x + 1, box_bot, bw - 3, 2, PNC_WHITE);
   }
   oled_flush();
 }
