@@ -68,14 +68,14 @@ calibration table.
 
 Both knobs and both buttons are wired and live:
 
-- **Left encoder** — change the selected parameter's value (hold its push while
+- **Right encoder** — change the selected parameter's value (hold its push while
   turning = fine steps for BPM / voltage)
-- **Right encoder** — select the parameter; rolling past either end wraps into
+- **Left encoder** — select the parameter; rolling past either end wraps into
   the neighbouring page
-- **Right encoder push** — tap = start/stop master clock (on the SYS page: run
+- **Left encoder push** — tap = start/stop master clock (on the SYS page: run
   the highlighted action); hold = reset all channel phases
+- **Right encoder push** — tap = next parameter (SYS page: run the highlighted action)
 - **Top button** — next page · **Bottom button** — previous page
-- **Left encoder push** — next parameter (SYS page: run the highlighted action)
 - Pages: `M` (master), `OUT1..N`, `SYS`
 - Master page params: `BPM`, `clock` (int / ext), `ext ppqn`, `run`
 

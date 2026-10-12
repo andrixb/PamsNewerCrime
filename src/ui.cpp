@@ -149,7 +149,7 @@ static uint8_t param_idx = 0;
 #ifndef ENC_CLICK_STEPS
 #define ENC_CLICK_STEPS 4
 #endif
-static const int8_t QD[16] = { 0, 1, -1, 0, -1, 0, 0, 1, 1, 0, 0, -1, 0, -1, 1, 0 };
+static const int8_t QD[16] = { 0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0 };
 
 static uint32_t ui_ticks = 0;
 
@@ -438,9 +438,9 @@ static void adjust(int8_t d) {
   uint8_t ch = is_master() ? 0 : ch_of_page();
   int32_t v = get_val(ch, param_idx);
   int32_t step = 1;
-  if (is_master() && param_idx == 0) step = digitalRead(PIN_ENC_SW) == LOW ? 25 : 100;
+  if (is_master() && param_idx == 0) step = digitalRead(PIN_ENC_R_SW) == LOW ? 25 : 100;
   else if (!is_master() && (param_idx == P_CVMIN || param_idx == P_CVMAX))
-    step = digitalRead(PIN_ENC_SW) == LOW ? 16 : 128;
+    step = digitalRead(PIN_ENC_R_SW) == LOW ? 16 : 128;
   set_val(ch, param_idx, v + d * step);
 }
 
@@ -473,10 +473,10 @@ static void select_rel(int8_t d) {
 // UI::Encoder::Poll / UI::Button::Poll feeding ui.Poll() at OC_UI_TIMER_RATE.
 //
 // O_C dual-knob scheme:
-//   LEFT turn  = edit selected value (hold LEFT push = fine steps, live in adjust())
-//   RIGHT turn = select param / wrap into pages
-//   LEFT push tap = next param (or execute highlighted action on SYS page)
-//   RIGHT push tap = start/stop clock (or SYS execute), hold = reset phases
+//   RIGHT turn = edit selected value (hold RIGHT push = fine steps, live in adjust())
+//   LEFT  turn = select param / wrap into pages
+//   RIGHT push tap = next param (or execute highlighted action on SYS page)
+//   LEFT  push tap = start/stop clock (or SYS execute); hold = reset phases
 //   TOP button = next page, BOTTOM button = prev page
 void ui_service() {
   ui_ticks++;
@@ -488,29 +488,29 @@ void ui_service() {
   btn_b2.poll(PIN_BTN_B2);
   btn_b1.poll(PIN_BTN_B1);
 
-  // LEFT encoder = edit the selected value.
-  int8_t dl = enc_l.read();
-  while (dl > 0) { adjust(1); dl--; }
-  while (dl < 0) { adjust(-1); dl++; }
-
-  // RIGHT encoder = select param / wrap into pages.
+  // RIGHT encoder = edit the selected value.
   int8_t dr = enc_r.read();
-  while (dr > 0) { select_rel(1); dr--; }
-  while (dr < 0) { select_rel(-1); dr++; }
+  while (dr > 0) { adjust(1); dr--; }
+  while (dr < 0) { adjust(-1); dr++; }
 
-  // LEFT push: tap = next param (SYS: execute action).
-  if (btn_enc_sw.just_pressed()) enc_sw_down_tick = ui_ticks;
-  else if (btn_enc_sw.released()) {
+  // LEFT encoder = select param / wrap into pages.
+  int8_t dl = enc_l.read();
+  while (dl > 0) { select_rel(1); dl--; }
+  while (dl < 0) { select_rel(-1); dl++; }
+
+  // RIGHT push: fine step is read live in adjust(); tap = next param (SYS: execute).
+  if (btn_enc_r_sw.just_pressed()) enc_sw_down_tick = ui_ticks;
+  else if (btn_enc_r_sw.released()) {
     if (is_sys()) pending_action = param_idx;
     else if (ui_ticks - enc_sw_down_tick < kLongPressTicks) param_idx = (param_idx + 1) % param_count();
   }
 
-  // RIGHT push: tap = run/stop (SYS: execute), hold = reset phases.
-  if (btn_enc_r_sw.just_pressed()) { enc_r_sw_down_tick = ui_ticks; enc_r_sw_handled = false; }
-  else if (btn_enc_r_sw.pressed() && !enc_r_sw_handled
+  // LEFT push: tap = run/stop (SYS: execute), hold = reset phases.
+  if (btn_enc_sw.just_pressed()) { enc_r_sw_down_tick = ui_ticks; enc_r_sw_handled = false; }
+  else if (btn_enc_sw.pressed() && !enc_r_sw_handled
            && ui_ticks - enc_r_sw_down_tick == kLongPressTicks && !is_sys()) {
     channels_reset(); enc_r_sw_handled = true;
-  } else if (btn_enc_r_sw.released() && !enc_r_sw_handled) {
+  } else if (btn_enc_sw.released() && !enc_r_sw_handled) {
     if (is_sys()) pending_action = param_idx;
     else { masterClock.running = !masterClock.running; mark_dirty(); }
   }
