@@ -212,21 +212,27 @@ static void do_action(uint8_t idx) {
   mark_dirty();
 }
 
+static bool display_ok = false;
+
 void ui_init() {
-  Wire.begin();
-  if (!display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS)) for (;;) ;
-  display.clearDisplay();
-  display.setTextColor(SSD1306_BLACK);
-  display.fillScreen(SSD1306_WHITE);
-  display.setTextColor(SSD1306_BLACK);
-  display.setTextSize(1);
-  display.cp437(true);
   pinMode(PIN_ENC_A, INPUT_PULLUP);
   pinMode(PIN_ENC_B, INPUT_PULLUP);
   pinMode(PIN_ENC_SW, INPUT_PULLUP);
   pinMode(PIN_BTN_B2, INPUT_PULLUP);
   enc_state = (digitalRead(PIN_ENC_B) ? 1 : 0) | (digitalRead(PIN_ENC_A) ? 2 : 0);
   param_idx = 0;
+
+  Wire.begin();
+  for (uint8_t i = 0; i < 3 && !display_ok; i++) {
+    display_ok = display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS);
+  }
+  if (!display_ok) return;  // boot without display rather than hanging in setup()
+  display.clearDisplay();
+  display.setTextColor(SSD1306_BLACK);
+  display.fillScreen(SSD1306_WHITE);
+  display.setTextColor(SSD1306_BLACK);
+  display.setTextSize(1);
+  display.cp437(true);
 }
 
 static void adjust(int8_t d) {
@@ -286,6 +292,7 @@ void ui_service() {
 }
 
 void ui_draw() {
+  if (!display_ok) return;
   display.fillScreen(SSD1306_WHITE);
   display.setTextColor(SSD1306_BLACK);
   uint8_t ch = is_master() ? 0 : ch_of_page();
