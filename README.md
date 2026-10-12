@@ -90,5 +90,7 @@ The `teensy40_8out` env shows Teensy 4.0 can also run 8 outputs (4 DAC chips).
 
 ## License
 
-MIT (as in the original O_C-derived code conventions); schematics/hardware of the
-commercial modules referenced above belong to their respective owners.
+MIT. This project is an independent implementation; it contains no source code from
+ALM Busy Circuits (their ALM-017 firmware is closed source) and no code copied from
+the O_C project. Names "Pamela's Workout" / "Pamela's NEW Workout" refer to products
+by ALM Busy Circuits, who own all associated trademarks and hardware designs.
