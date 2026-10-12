@@ -34,6 +34,8 @@
 
 #define DISPLAY_ADDRESS 0x3C
 #define DISPLAY_RESET   -1
+#define PIN_I2C_SDA 18
+#define PIN_I2C_SCL 19
 // 1 = panel ACKs on I2C but stays blank with the SSD1306 driver: it is an
 // SH1106-based module (the controller used by O_C / Phazerville panels).
 #ifndef DISPLAY_SH1106

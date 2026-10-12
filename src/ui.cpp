@@ -3,15 +3,17 @@
 #include "storage.h"
 #include <Wire.h>
 #include <Adafruit_GFX.h>
-#if DISPLAY_SH1106
-#include <Adafruit_SH110X.h>
-#define SSD1306_BLACK SH110X_BLACK
-#define SSD1306_WHITE SH110X_WHITE
-static Adafruit_SH110X display(128, 64, &Wire, DISPLAY_RESET);
-#else
 #include <Adafruit_SSD1306.h>
-static Adafruit_SSD1306 display(128, 64, &Wire, DISPLAY_RESET);
-#endif
+#include <Adafruit_SH110X.h>
+
+#define PNC_BLACK 0
+#define PNC_WHITE 1
+
+static Adafruit_SSD1306 oled_ssd(128, 64, &Wire, DISPLAY_RESET);
+static Adafruit_SH110X  oled_sh(128, 64, &Wire, DISPLAY_RESET);
+static Adafruit_GFX *gfx = nullptr;
+// 0 = SSD1306 128x64, 1 = SSD1306 128x32, 2 = SH1106
+static uint8_t oled_mode = 0;
 
 extern Channel channels[NUM_OUTPUTS];
 
@@ -280,12 +282,69 @@ static void do_action(uint8_t idx) {
 static bool display_ok = false;
 static uint8_t display_addr = 0;
 
-static bool oled_begin(uint8_t addr) {
+static void i2c_bus_recovery() {
+  // I2C spec "bus clear": a slave left mid-transfer holds SDA low forever
+  // (e.g. if the Teensy resets during a write). Clock SCL until SDA is
+  // released, then issue a STOP so the slave aborts cleanly.
+  pinMode(PIN_I2C_SCL, OUTPUT);
+  digitalWrite(PIN_I2C_SCL, HIGH);
+  pinMode(PIN_I2C_SDA, INPUT);
+  for (uint8_t i = 0; i < 18; i++) {
+    if (digitalRead(PIN_I2C_SDA) == HIGH) break;
+    delayMicroseconds(6);
+    digitalWrite(PIN_I2C_SCL, LOW);
+    delayMicroseconds(6);
+    digitalWrite(PIN_I2C_SCL, HIGH);
+  }
+  pinMode(PIN_I2C_SDA, OUTPUT);
+  digitalWrite(PIN_I2C_SDA, LOW);
+  delayMicroseconds(6);
+  digitalWrite(PIN_I2C_SCL, HIGH);
+  delayMicroseconds(6);
+  digitalWrite(PIN_I2C_SDA, HIGH);
+  delayMicroseconds(6);
+  pinMode(PIN_I2C_SDA, INPUT);
+  pinMode(PIN_I2C_SCL, INPUT);
+}
+
+static void oled_flush() {
+  if (oled_mode == 2) oled_sh.display();
+  else oled_ssd.display();
+}
+
+static bool oled_setup_mode(uint8_t mode, uint8_t addr) {
+  bool ok;
+  if (mode == 2) {
+    ok = oled_sh.begin(addr, true);
+    gfx = &oled_sh;
+  } else {
+    ok = oled_ssd.begin(SSD1306_SWITCHCAPVCC, addr);
+    gfx = &oled_ssd;
+  }
+  if (ok) oled_mode = mode;
+  return ok;
+}
+
+static uint8_t oled_preferred_mode() {
 #if DISPLAY_SH1106
-  return display.begin(addr, true);
+  return 2;
 #else
-  return display.begin(SSD1306_SWITCHCAPVCC, addr);
+  return 0;
 #endif
+}
+
+static void oled_probe(uint8_t addr) {
+  Serial.println("pnc: probe -> count white flashes: 1=SSD1306 2=SH1106");
+  for (uint8_t m = 0; m <= 2; m += 2) {
+    oled_setup_mode(m, addr);
+    gfx->fillScreen(PNC_BLACK);
+    oled_flush();
+    for (uint8_t f = 0; f <= m / 2; f++) {
+      gfx->fillScreen(PNC_WHITE); oled_flush(); delay(150);
+      gfx->fillScreen(PNC_BLACK); oled_flush(); delay(150);
+    }
+    delay(600);
+  }
 }
 
 void ui_init() {
@@ -296,19 +355,19 @@ void ui_init() {
   enc_state = (digitalRead(PIN_ENC_B) ? 1 : 0) | (digitalRead(PIN_ENC_A) ? 2 : 0);
   param_idx = 0;
 
+  i2c_bus_recovery();
   Wire.begin();
   Wire.setClock(400000);
   static const uint8_t ADDRS[] = { DISPLAY_ADDRESS, 0x3D };
-  for (uint8_t trial = 0; trial < 6 && !display_ok; trial++) {
-    uint8_t addr = ADDRS[trial % 2];
-    if (oled_begin(addr)) {
-      display_ok = true;
-      display_addr = addr;
-    }
+  for (uint8_t i = 0; i < 2 && !display_addr; i++) {
+    Wire.beginTransmission(ADDRS[i]);
+    if (Wire.endTransmission() == 0) display_addr = ADDRS[i];
   }
-  Serial.printf("pnc: boot, oled %s (addr 0x%02X)\n",
-                display_ok ? "found" : "NOT FOUND", display_addr);
-  if (!display_ok) {
+  uint8_t pref = oled_preferred_mode();
+  display_ok = display_addr && oled_setup_mode(pref, display_addr);
+  Serial.printf("pnc: boot, oled %s @0x%02X mode %u\n",
+                display_ok ? "init" : "FAIL", display_addr, pref);
+  if (!display_addr) {
     Serial.print("pnc: i2c scan:");
     for (uint8_t a = 8; a < 120; a++) {
       Wire.beginTransmission(a);
@@ -317,18 +376,10 @@ void ui_init() {
     Serial.println();
   }
   if (!display_ok) return;  // boot without display rather than hanging in setup()
-  display.fillScreen(SSD1306_WHITE);
-  display.display();
-  delay(150);
-  display.fillScreen(SSD1306_BLACK);
-  display.display();
-  delay(150);
-  display.clearDisplay();
-  display.setTextColor(SSD1306_BLACK);
-  display.fillScreen(SSD1306_WHITE);
-  display.setTextColor(SSD1306_BLACK);
-  display.setTextSize(1);
-  display.cp437(true);
+  oled_probe(display_addr);
+  oled_setup_mode(pref, display_addr);
+  gfx->setTextSize(1);
+  gfx->cp437(true);
 }
 
 static void adjust(int8_t d) {
@@ -389,35 +440,35 @@ void ui_service() {
 
 void ui_draw() {
   if (!display_ok) return;
-  display.fillScreen(SSD1306_WHITE);
-  display.setTextColor(SSD1306_BLACK);
+  gfx->fillScreen(PNC_WHITE);
+  gfx->setTextColor(PNC_BLACK);
   uint8_t ch = is_master() ? 0 : ch_of_page();
   char buf[20];
 
   if (is_master()) {
-    display.setCursor(0, 0);
-    display.printf("M %d.%02d %s", masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
-                   masterClock.source == 2 ? "MIDI" : (masterClock.source ? "EXT" : "INT"));
+    gfx->setCursor(0, 0);
+    gfx->printf("M %d.%02d %s", masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
+                masterClock.source == 2 ? "MIDI" : (masterClock.source ? "EXT" : "INT"));
     if (masterClock.source && masterClock.measured_bpm_cent()) {
-      display.setCursor(80, 0);
-      display.printf("%d.%02d", masterClock.measured_bpm_cent() / 100, masterClock.measured_bpm_cent() % 100);
+      gfx->setCursor(80, 0);
+      gfx->printf("%d.%02d", masterClock.measured_bpm_cent() / 100, masterClock.measured_bpm_cent() % 100);
     }
   } else if (is_sys()) {
-    display.setCursor(0, 0);
-    display.printf("SYS");
+    gfx->setCursor(0, 0);
+    gfx->printf("SYS");
   } else {
-    display.setCursor(0, 0);
-    display.printf("OUT%d %d.%02d %s", ch + 1, masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
-                   masterClock.running ? ">" : "||");
+    gfx->setCursor(0, 0);
+    gfx->printf("OUT%d %d.%02d %s", ch + 1, masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
+                masterClock.running ? ">" : "||");
   }
 
   if (is_sys()) {
     for (uint8_t i = 0; i < 5; i++) {
       int16_t y = 12 + i * 10;
-      if (i == param_idx) { display.fillRect(0, y - 1, 128, 10, SSD1306_BLACK); display.setTextColor(SSD1306_WHITE); }
-      display.setCursor(0, y);
-      display.printf("%s", SYS_ACTIONS[i]);
-      if (i == param_idx) display.setTextColor(SSD1306_BLACK);
+      if (i == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_BLACK); gfx->setTextColor(PNC_WHITE); }
+      gfx->setCursor(0, y);
+      gfx->printf("%s", SYS_ACTIONS[i]);
+      if (i == param_idx) gfx->setTextColor(PNC_BLACK);
     }
   } else {
     uint8_t cnt = param_count();
@@ -430,12 +481,12 @@ void ui_draw() {
       uint8_t i = top + r;
       if (i >= cnt) break;
       int16_t y = 12 + r * 14;
-      if (i == param_idx) { display.fillRect(0, y - 1, 128, 10, SSD1306_BLACK); display.setTextColor(SSD1306_WHITE); }
-      display.setCursor(0, y);
-      display.printf("%-9s", label_of(ch, i));
+      if (i == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_BLACK); gfx->setTextColor(PNC_WHITE); }
+      gfx->setCursor(0, y);
+      gfx->printf("%-9s", label_of(ch, i));
       fmt_val(ch, i, buf, sizeof(buf));
-      display.printf("%s", buf);
-      if (i == param_idx) display.setTextColor(SSD1306_BLACK);
+      gfx->printf("%s", buf);
+      if (i == param_idx) gfx->setTextColor(PNC_BLACK);
     }
   }
 
@@ -444,11 +495,11 @@ void ui_draw() {
     uint8_t x = i * (128 / NUM_OUTPUTS);
     uint8_t w = (128 / NUM_OUTPUTS) - 3;
     uint8_t h = mv * 10 / DAC_MAX_MV;
-    display.drawRect(x, 52, w, 10, SSD1306_BLACK);
-    if (h) display.fillRect(x + 1, 61 - h, w - 2, h, SSD1306_BLACK);
-    if (channels[i].gate_state) display.fillRect(x, 63, w, 1, SSD1306_BLACK);
+    gfx->drawRect(x, 52, w, 10, PNC_BLACK);
+    if (h) gfx->fillRect(x + 1, 61 - h, w - 2, h, PNC_BLACK);
+    if (channels[i].gate_state) gfx->fillRect(x, 63, w, 1, PNC_BLACK);
   }
-  display.display();
+  oled_flush();
 }
 
 uint8_t ui_current_page() { return page; }
