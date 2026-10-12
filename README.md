@@ -1,14 +1,13 @@
 # Workout-Time
 
-Teensy 4.0 / 4.1 firmware inspired by the **Pamela's NEW Workout** (ALM-017) eurorack module:
-a programmable, clocked modulation source. Multiple CV outputs generate pulses, LFOs,
-ramps, stepped sequences and sample & holds, all synced to a BPM-based master clock
-(internal or externally synced), with Euclidean patterns, phase/delay/swing, probability,
-2 assignable CV inputs, banks and power-off persistence.
+Workout-Time is a programmable, clocked modulation source for eurorack, running on
+Teensy 4.0 / 4.1. Multiple CV outputs produce pulses, LFOs, ramps, stepped sequences
+and sample & holds, all synced to a BPM-based master clock (internal or externally
+synced), with Euclidean patterns, phase/delay/swing, probability, 2 assignable CV
+inputs, banks and power-off persistence.
 
-This is an independent, clean-room implementation written from the ALM-017 operation
-manual and the original O_C `H1200` app concepts. It does **not** contain any code or
-firmware from ALM Busy Circuits (their firmware is closed source and STM32-only).
+The design lineage is the open-source O_C / H1200 clocked-modulation apps; the
+implementation is original code, written from scratch for the Teensy 4 hardware.
 
 ## Features
 
@@ -99,13 +98,10 @@ The `teensy40_8out` env shows Teensy 4.0 can also run 8 outputs (4 DAC chips).
 
 - Update rate 1 kHz (round-robin-free, all outputs updated every tick)
 - External clock jitter: measured with a smoothed period estimator
-- No MIDI/DIN-sync expanders (ALM's optional hardware) — the ext-sync input covers
-  the common case
+- No MIDI/DIN-sync clock outputs — the ext-clock input covers the common case
 - Verified by build only if you report back — hardware bring-up notes welcome as issues
 
 ## License
 
-MIT. This project is an independent implementation; it contains no source code from
-ALM Busy Circuits (their ALM-017 firmware is closed source) and no code copied from
-the O_C project. Names "Pamela's Workout" / "Pamela's NEW Workout" refer to products
-by ALM Busy Circuits, who own all associated trademarks and hardware designs.
+MIT. This project is an independent implementation; it contains no source code copied
+from the O_C project and no firmware from any commercial product.
