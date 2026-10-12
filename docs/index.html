@@ -290,7 +290,7 @@ async function rebootViaSerial() {
 
 // ---------- UI glue ----------
 function refreshButtons() {
-  $("flash").disabled = !(image && hidDevice && hidDevice.opened);
+  $("flash").disabled = !(hidDevice && hidDevice.opened);
   $("bootOnly").disabled = !(hidDevice && hidDevice.opened);
 }
 
@@ -305,7 +305,7 @@ document.querySelectorAll('input[name=src]').forEach(r => r.addEventListener("ch
   $("hexFile").disabled = r.value !== "local" && true;
 }));
 $("hexFile").addEventListener("change", () => { image = null; loadHex().catch(e => log(e.message, "err")); });
-$("releaseAsset").addEventListener("change", () => { image = null; });
+$("releaseAsset").addEventListener("change", () => { image = null; loadHex().catch(e => log(e.message, "err")); refreshButtons(); });
 $("target").addEventListener("change", () => { image = null; });
 document.querySelectorAll('input[name=src]').forEach(r => r.addEventListener("change", () => {
   if (srcKind() === "release" && !$("hexFile").files[0]) { image = null; $("hexInfo").textContent = ""; refreshButtons(); }
