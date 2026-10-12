@@ -1,0 +1,6 @@
+.pio/
+build/
+*.elf
+*.hex
+*.lmap
+.DS_Store
