@@ -2,6 +2,7 @@
 #include "clock.h"
 #include "storage.h"
 #include <Adafruit_GFX.h>
+#include <string.h>
 
 // ---------------------------------------------------------------------------
 // O_C panel: SH1106 128x64 on SPI (shared bus with the DAC8565).
@@ -132,86 +133,133 @@ static uint8_t page = 0;
 static uint8_t param_idx = 0;
 
 // ---------------------------------------------------------------------------
-// App menu (Phazerville-style). Each channel's "app" is its mode; assigning an
-// app makes only that app's parameters browsable, instead of the flat 44-item
-// list. Each table below is a list of raw P_* indices the mode actually uses,
-// followed by a shared "modulation" block (CV-in destinations + sources + lag)
-// that applies to every live mode. 0xFF terminates each list.
+// App model. Each channel's "app" is its mode. To avoid an endless flat list,
+// an app's parameters are split into labelled GROUPS, browsed one after another
+// (the group name shows in the page header):
+//   shape  - params unique to this app (wave, width, env, logic, steps...)
+//   clock  - ratio, phase, prob
+//   euclid - euclid en/len/fill/rot   (only for gate-based apps)
+//   range  - cv min, cv max, invert, lag
+//   mod    - the two CV-in modulation chains
+// The browse cursor is a single flat index over the app's concatenated groups.
+// Indices are raw P_* values; 0xFF terminates each array.
 // ---------------------------------------------------------------------------
-static const uint8_t MOD_BLOCK[] = { P_CVMIN, P_CVMAX, P_INV, P_CVS1, P_CVSC1, P_CVS2, P_CVSC2, P_IN1S, P_IN2S, P_SLEW, 0xFF };
+enum { G_SHAPE = 0, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END = 0xFF };
 
-static const uint8_t* app_params(uint8_t mode, uint8_t *out_count) {
-  static const uint8_t A_OFF[]   = { 0xFF };
-  static const uint8_t A_PULSE[] = { P_RATIO, P_WIDTH, P_DELAY, P_PHASE, P_PROB,
-                                     P_EUEN, P_EULEN, P_EUFILL, P_EUROT, 0xFF };
-  static const uint8_t A_LFO[]   = { P_RATIO, P_WAVE, P_SKEW, P_PHASE, P_PROB, 0xFF };
-  static const uint8_t A_RAMP[]  = { P_RATIO, P_SKEW, P_PHASE, P_PROB, 0xFF };
-  static const uint8_t A_STEP[]  = { P_RATIO, P_SLEN, P_STEP0, 0xFF };
-  static const uint8_t A_SH[]    = { P_RATIO, P_PHASE, P_PROB, 0xFF };
-  static const uint8_t A_NOTE[]  = { P_RATIO, P_SCALE, P_PHASE, P_PROB, 0xFF };
-  static const uint8_t A_ENV[]   = { P_RATIO, P_ENV_A, P_ENV_D, P_PROB, 0xFF };
-  static const uint8_t A_LOGIC[] = { P_RATIO, P_LGOP, P_LGSRC, P_WIDTH, P_DELAY, P_PHASE, P_PROB,
-                                     P_EUEN, P_EULEN, P_EUFILL, P_EUROT, 0xFF };
-  static const uint8_t A_WG[]    = { P_RATIO, P_WIDTH, P_SKEW, P_PHASE, 0xFF };
-  static const uint8_t A_RW[]    = { P_RATIO, P_WIDTH, P_PROB, 0xFF };
+static const uint8_t A_CLOCK[]  = { P_RATIO, P_PHASE, P_PROB, 0xFF };
+static const uint8_t A_EUCLID[] = { P_EUEN, P_EULEN, P_EUFILL, P_EUROT, 0xFF };
+static const uint8_t A_RANGE[]  = { P_CVMIN, P_CVMAX, P_INV, P_SLEW, 0xFF };
+static const uint8_t A_MOD[]    = { P_IN1S, P_CVS1, P_CVSC1, P_IN2S, P_CVS2, P_CVSC2, 0xFF };
 
-  const uint8_t *hdr;
+// Per-mode list of groups (G_SHAPE always first; G_END terminates).
+static const uint8_t* mode_groups(uint8_t mode) {
+  static const uint8_t off[]   = { G_SHAPE, G_END };
+  static const uint8_t pul[]   = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
+  static const uint8_t lfo[]   = { G_SHAPE, G_CLOCK, G_RANGE, G_MOD, G_END };
+  static const uint8_t ramp[]  = { G_SHAPE, G_CLOCK, G_RANGE, G_END };
+  static const uint8_t step[]  = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
+  static const uint8_t sh[]    = { G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
+  static const uint8_t note[]  = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
+  static const uint8_t env[]   = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
+  static const uint8_t logic[] = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
+  static const uint8_t wg[]    = { G_SHAPE, G_CLOCK, G_RANGE, G_MOD, G_END };
+  static const uint8_t rw[]    = { G_SHAPE, G_CLOCK, G_EUCLID, G_RANGE, G_MOD, G_END };
   switch (mode) {
-    case MODE_PULSE: hdr = A_PULSE; break;
-    case MODE_LFO:   hdr = A_LFO;   break;
-    case MODE_RAMP:  hdr = A_RAMP;  break;
-    case MODE_STEP:  hdr = A_STEP;  break;
-    case MODE_SH:    hdr = A_SH;    break;
-    case MODE_NOTE:  hdr = A_NOTE;  break;
-    case MODE_ENV:   hdr = A_ENV;   break;
-    case MODE_LOGIC: hdr = A_LOGIC; break;
-    case MODE_WGGLE: hdr = A_WG;    break;
-    case MODE_RWALK: hdr = A_RW;    break;
-    default:         hdr = A_OFF;   break;
+    case MODE_PULSE: return pul;
+    case MODE_LFO:   return lfo;
+    case MODE_RAMP:  return ramp;
+    case MODE_STEP:  return step;
+    case MODE_SH:    return sh;
+    case MODE_NOTE:  return note;
+    case MODE_ENV:   return env;
+    case MODE_LOGIC: return logic;
+    case MODE_WGGLE: return wg;
+    case MODE_RWALK: return rw;
+    default:         return off;
   }
-  uint8_t n = 0;
-  while (hdr[n] != 0xFF) n++;
-  if (mode != MODE_OFF) {
-    uint8_t m = 0;
-    while (MOD_BLOCK[m] != 0xFF) m++;
-    n += m;
-  }
-  if (out_count) *out_count = n;
-  return hdr;
 }
 
-// Flattened param list for the current channel page (app header + mod block +
-// the 16 steps, since A_STEP only lists P_STEP0 as the anchor). Indices are
-// relative to the app's own view; step views expand P_STEP0 into P_STEP0..15.
-static uint8_t app_param_at(uint8_t mode, uint8_t pos, uint8_t slen) {
-  uint8_t count;
-  const uint8_t *hdr = app_params(mode, &count);
-  uint8_t modn = 0;
-  while (MOD_BLOCK[modn] != 0xFF) modn++;
-  uint8_t hdrlen = (mode == MODE_OFF) ? count : (uint8_t)(count - modn);
-
-  // Steps mode: header up to P_STEP0, then step_len steps, then mod block.
-  if (mode == MODE_STEP) {
-    uint8_t base = 2;  // ratio, seq len  (P_SLEN anchors steps)
-    uint8_t steps = slen ? slen : 1;
-    if (pos < base) return hdr[pos];
-    if (pos < base + steps) return P_STEP0 + (pos - base);
-    return MOD_BLOCK[pos - base - steps];
+static const uint8_t* shape_arr(uint8_t mode) {
+  switch (mode) {
+    case MODE_PULSE: { static const uint8_t v[] = { P_WIDTH, P_DELAY, 0xFF };  return v; }
+    case MODE_LFO:   { static const uint8_t v[] = { P_WAVE, P_SKEW, 0xFF };    return v; }
+    case MODE_RAMP:  { static const uint8_t v[] = { P_SKEW, 0xFF };            return v; }
+    case MODE_NOTE:  { static const uint8_t v[] = { P_SCALE, 0xFF };           return v; }
+    case MODE_ENV:   { static const uint8_t v[] = { P_ENV_A, P_ENV_D, 0xFF };  return v; }
+    case MODE_LOGIC: { static const uint8_t v[] = { P_LGOP, P_LGSRC, P_WIDTH, P_DELAY, 0xFF }; return v; }
+    case MODE_WGGLE: { static const uint8_t v[] = { P_WIDTH, P_SKEW, 0xFF };   return v; }
+    case MODE_RWALK: { static const uint8_t v[] = { P_WIDTH, 0xFF };           return v; }
+    default:         { static const uint8_t v[] = { 0xFF };                    return v; }
   }
-  if (pos < hdrlen) return hdr[pos];
-  return MOD_BLOCK[pos - hdrlen];
 }
 
+static uint8_t arr_len(const uint8_t *a) { uint8_t n = 0; while (a[n] != 0xFF) n++; return n; }
+
+// Number of items in one group. Steps mode expands P_STEP0 into step_len slots.
+static uint8_t group_count(uint8_t code, uint8_t mode, uint8_t slen) {
+  switch (code) {
+    case G_SHAPE:
+      if (mode == MODE_OFF)  return 0;
+      if (mode == MODE_STEP) return (uint8_t)(1 + (slen ? slen : 1));  // seq len + steps
+      return arr_len(shape_arr(mode));
+    case G_CLOCK:  return arr_len(A_CLOCK);
+    case G_EUCLID: return arr_len(A_EUCLID);
+    case G_RANGE:  return arr_len(A_RANGE);
+    case G_MOD:    return arr_len(A_MOD);
+  }
+  return 0;
+}
+static const char* group_name(uint8_t code, uint8_t mode) {
+  switch (code) {
+    case G_CLOCK:  return "clock";
+    case G_EUCLID: return "euclid";
+    case G_RANGE:  return "range";
+    case G_MOD:    return "mod";
+    default:       return MODE_NAMES[mode];
+  }
+}
+// Resolve position `local` within group `code` to a raw P_* index.
+static uint8_t group_raw(uint8_t code, uint8_t local, uint8_t mode, uint8_t slen) {
+  switch (code) {
+    case G_SHAPE:
+      if (mode == MODE_STEP) return (local == 0) ? P_SLEN : (uint8_t)(P_STEP0 + (local - 1));
+      return shape_arr(mode)[local];
+    case G_CLOCK:  return A_CLOCK[local];
+    case G_EUCLID: return A_EUCLID[local];
+    case G_RANGE:  return A_RANGE[local];
+    case G_MOD:    return A_MOD[local];
+  }
+  return P_RATIO;
+}
+
+// Total browsable params for a mode (sum of its groups).
 static uint8_t chan_param_count(uint8_t mode, uint8_t slen) {
-  if (mode == MODE_OFF) return 0;
-  uint8_t count;
-  app_params(mode, &count);
-  uint8_t modn = 0;
-  while (MOD_BLOCK[modn] != 0xFF) modn++;
-  uint8_t hdrlen = (uint8_t)(count - modn);
-  if (mode == MODE_STEP) return 2 + (slen ? slen : 1) + modn;
-  return hdrlen + modn;
+  const uint8_t *g = mode_groups(mode);
+  uint8_t t = 0;
+  for (; *g != G_END; g++) t += group_count(*g, mode, slen);
+  return t;
 }
+// Flat index -> raw P_* index.
+static uint8_t app_param_at(uint8_t mode, uint8_t pos, uint8_t slen) {
+  const uint8_t *g = mode_groups(mode);
+  for (; *g != G_END; g++) {
+    uint8_t c = group_count(*g, mode, slen);
+    if (pos < c) return group_raw(*g, pos, mode, slen);
+    pos -= c;
+  }
+  return P_RATIO;
+}
+// Flat index -> its group's display name (for the header).
+static const char* app_param_group(uint8_t mode, uint8_t pos, uint8_t slen) {
+  const uint8_t *g = mode_groups(mode);
+  for (; *g != G_END; g++) {
+    uint8_t c = group_count(*g, mode, slen);
+    if (pos < c) return group_name(*g, mode);
+    pos -= c;
+  }
+  return MODE_NAMES[mode];
+}
+
 
 
 // ---------------------------------------------------------------------------
@@ -581,6 +629,8 @@ static void select_rel(int8_t d) {
 //   APP menu open: LEFT/RIGHT turn scroll modes, RIGHT push = assign+close,
 //                  LEFT push or either panel button = cancel
 //   TOP button = next page, BOTTOM button = prev page
+//   APP menu (open by holding LEFT): scroll modes with either encoder, PRESS
+//   either encoder to assign, press a panel button to cancel.
 void ui_service() {
   ui_ticks++;
 
@@ -592,20 +642,22 @@ void ui_service() {
   btn_b1.poll(PIN_BTN_B1);
 
   if (app_menu) {
-    // Both encoders scroll the mode list; wrap around.
+    // Either encoder scrolls the mode list (wrapping).
     int8_t d = enc_l.read();
-    d += enc_r.read();
+    d += (int8_t)-enc_r.read();
     while (d > 0) { app_sel = (app_sel + 1) % MODE_LAST; d--; }
     while (d < 0) { app_sel = (app_sel + MODE_LAST - 1) % MODE_LAST; d++; }
-    // Assign: RIGHT push tap.
-    if (btn_enc_r_sw.released()) {
+    // Either encoder push ASSIGNS the highlighted app and closes (this is the
+    // "select" action - a press, matching how Phazerville commits a menu pick).
+    if (btn_enc_sw.released() || btn_enc_r_sw.released()) {
       channels[ch_of_page()].p.mode = app_sel;
       mark_dirty();
       app_menu = false;
       param_idx = 0;
+      return;
     }
-    // Cancel: LEFT push tap, or either panel button.
-    if (btn_enc_sw.released() || btn_b2.released() || btn_b1.released()) app_menu = false;
+    // Either panel button CANCELS without changing the mode.
+    if (btn_b2.released() || btn_b1.released()) { app_menu = false; return; }
     return;
   }
 
@@ -672,30 +724,40 @@ void ui_draw() {
     gfx->printf("SYS");
   } else {
     gfx->setCursor(0, 0);
-    gfx->printf("OUT%d %s", ch + 1, MODE_NAMES[channels[ch].p.mode]);
+    uint8_t gm = channels[ch].p.mode;
     if (app_menu) {
-      // GFX glyphs are 8px tall, so rows must step by 8 or they overlap. 11 modes
-      // don't fit, so keep a 6-row window centred on the highlighted entry.
-      gfx->setCursor(96, 0);
-      gfx->printf("[%d]", ch + 1);
-      const int16_t y0 = 12, dy = 8;
-      const uint8_t rows = 6;                 // 6 rows: y 12..52, above the bottom edge
-      uint8_t top = 0;
-      if (app_sel + 1 >= rows) {
-        top = (app_sel >= MODE_LAST - 1) ? (MODE_LAST - rows) : (app_sel - rows + 1);
-      }
-      for (uint8_t r = 0; r < rows; r++) {
-        uint8_t m = top + r;
-        if (m >= MODE_LAST) break;
-        int16_t y = y0 + r * dy;
-        if (m == app_sel) { gfx->fillRect(0, y, 128, 8, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
-        gfx->setCursor(2, y);
-        gfx->printf("%s", MODE_NAMES[m]);
-        if (m == app_sel) gfx->setTextColor(PNC_WHITE);
-      }
-      oled_flush();
-      return;
+      gfx->printf("PICK APP OUT%d", ch + 1);
+    } else {
+      gfx->printf("OUT%d %s", ch + 1, MODE_NAMES[gm]);
+      // Right-align the current group name of the highlighted param.
+      const char *grp = app_param_group(gm, param_idx, channels[ch].p.step_len);
+      gfx->setCursor(128 - 6 * (int8_t)strlen(grp), 0);
+      gfx->printf("%s", grp);
     }
+  }
+
+  if (app_menu && !is_master() && !is_sys()) {
+    // 8px rows (GFX glyph height); 6-row scrolling window over 11 modes.
+    const int16_t y0 = 12, dy = 8;
+    const uint8_t rows = 6;
+    uint8_t top = 0;
+    if (app_sel + 1 >= rows)
+      top = (app_sel >= MODE_LAST - 1) ? (MODE_LAST - rows) : (app_sel - rows + 1);
+    for (uint8_t r = 0; r < rows; r++) {
+      uint8_t m = top + r;
+      if (m >= MODE_LAST) break;
+      int16_t y = y0 + r * dy;
+      if (m == app_sel) { gfx->fillRect(0, y, 128, 8, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
+      gfx->setCursor(2, y);
+      gfx->printf("%s", MODE_NAMES[m]);
+      if (m == channels[ch].p.mode) {
+        gfx->setCursor(96, y);
+        gfx->printf("*");   // the output's current app
+      }
+      if (m == app_sel) gfx->setTextColor(PNC_WHITE);
+    }
+    oled_flush();
+    return;
   }
 
   if (is_sys()) {

@@ -83,17 +83,24 @@ Both knobs and both buttons are wired and live:
 
 Hold the **left encoder** on any output page to open the app menu — a list of
 the modes (`off, pulse, LFO, ramp, step, S&H, note, env, logic, woggle, rwalk`),
-one per output like a Phazerville "app". Rotate either encoder to scroll, then:
+one per output like a Phazerville "app". Rotate either encoder to scroll (the
+output's current app is marked `*`), then **press either encoder** to assign it.
+Either panel button cancels.
 
-- **Right push** = assign the highlighted app to this output and close
-- **Left push** or either panel button = cancel
+Once assigned, the output page is split into short labelled **groups** instead of
+one long list. The highlighted parameter's group shows on the right of the
+header. Scroll past the end of one group to enter the next:
 
-Once assigned, the output page shows **only that app's parameters** (plus the
-shared output/modulation block: `cv min/max`, `invert`, `cv in 1/2` + scales,
-`cv1/cv2 from`, `lag`), instead of the old flat 44-item list. For example
-`LFO` shows ratio / wave / skew / phase / prob + the mod block; `env` shows
-ratio / attack / decay / prob + the mod block. SYS page: save/load bank A and B,
-restore defaults.
+| Group | Contents |
+|-------|----------|
+| *app name* (shape) | the params unique to the app — e.g. `wave`/`skew` for LFO, `width`/`delay` for pulse, `attack`/`decay` for env, `seq len` + `step 1..N` for step |
+| `clock` | `ratio`, `phase`, `prob` |
+| `euclid` | euclid en / length / fill / rotation (gate-based apps only) |
+| `range` | `cv min`, `cv max`, `invert`, `lag` |
+| `mod` | `cv1/cv2 from`, `cv in 1/2`, `cv1/cv2 scale` (CV modulation) |
+
+Continuous apps (LFO/ramp/woggle) skip the `euclid` group; `S&H` has no shape
+group. SYS page: save/load bank A and B, restore defaults.
 
 ## Web flasher
 
