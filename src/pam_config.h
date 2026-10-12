@@ -34,6 +34,11 @@
 
 #define DISPLAY_ADDRESS 0x3C
 #define DISPLAY_RESET   -1
+// 1 = panel ACKs on I2C but stays blank with the SSD1306 driver: it is an
+// SH1106-based module (the controller used by O_C / Phazerville panels).
+#ifndef DISPLAY_SH1106
+#define DISPLAY_SH1106 0
+#endif
 
 // MIDI clock input: Serial1 RX on pin 0 (Teensy 4.0/4.1), feed through a
 // 6N138/6N139 optocoupler (or resistor divider) per the MIDI spec.

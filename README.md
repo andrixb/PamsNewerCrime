@@ -68,6 +68,22 @@ Other pins:
 |---------------------|------------|-------|
 | SSD1306 OLED SDA    | 18         | I2C, 3.3 V module |
 | SSD1306 OLED SCL    | 19         | |
+
+### OLED controller variants (blank screen?)
+
+Most 128x64 I2C OLEDs use an **SSD1306**; but a large share of cheap modules
+(and the O_C / Phazerville panels this project is named after) use the **SH1106**.
+A SH1106 panel will *acknowledge* I2C and report `begin()` success, yet stay
+completely blank, because SH1106 has 132 columns with a +2 offset and only supports
+page addressing. Build the matching variant:
+
+- `teensy40` / `teensy41` — SSD1306 (default)
+- `teensy40_sh1106` / `teensy41_sh1106` — SH1106 (adds `-DDISPLAY_SH1106=1`)
+
+On boot the firmware flashes the panel all-white then all-black as a self-test, and
+prints status over USB serial (`pnc: boot, oled found (addr 0x3C)`). If the screen
+never flashes white/black on the SSD1306 build, reflash the `_sh1106` build. Use the
+web flasher's **Debug console** (step 4 on the page) to read the serial status.
 | Encoder A / B / SW  | 4 / 5 / 6  | to GND, internal pullups |
 | Button B2           | 2          | to GND |
 | Clock input         | 3          | 3.3 V logic; use 74HC14 Schmitt trigger from eurorack 5-12 V |

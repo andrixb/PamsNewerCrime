@@ -3,7 +3,15 @@
 #include "storage.h"
 #include <Wire.h>
 #include <Adafruit_GFX.h>
+#if DISPLAY_SH1106
+#include <Adafruit_SH110X.h>
+#define SSD1306_BLACK SH110X_BLACK
+#define SSD1306_WHITE SH110X_WHITE
+static Adafruit_SH110X display(128, 64, &Wire, DISPLAY_RESET);
+#else
 #include <Adafruit_SSD1306.h>
+static Adafruit_SSD1306 display(128, 64, &Wire, DISPLAY_RESET);
+#endif
 
 extern Channel channels[NUM_OUTPUTS];
 
@@ -46,8 +54,6 @@ static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A"
 #define CH_PARAM_COUNT 44
 
 #define MASTER_PARAM_COUNT 4
-
-static Adafruit_SSD1306 display(128, 64, &Wire, DISPLAY_RESET);
 
 static uint8_t page = 0;
 static uint8_t param_idx = 0;
@@ -274,6 +280,14 @@ static void do_action(uint8_t idx) {
 static bool display_ok = false;
 static uint8_t display_addr = 0;
 
+static bool oled_begin(uint8_t addr) {
+#if DISPLAY_SH1106
+  return display.begin(addr, true);
+#else
+  return display.begin(SSD1306_SWITCHCAPVCC, addr);
+#endif
+}
+
 void ui_init() {
   pinMode(PIN_ENC_A, INPUT_PULLUP);
   pinMode(PIN_ENC_B, INPUT_PULLUP);
@@ -287,7 +301,7 @@ void ui_init() {
   static const uint8_t ADDRS[] = { DISPLAY_ADDRESS, 0x3D };
   for (uint8_t trial = 0; trial < 6 && !display_ok; trial++) {
     uint8_t addr = ADDRS[trial % 2];
-    if (display.begin(SSD1306_SWITCHCAPVCC, addr)) {
+    if (oled_begin(addr)) {
       display_ok = true;
       display_addr = addr;
     }
@@ -303,6 +317,12 @@ void ui_init() {
     Serial.println();
   }
   if (!display_ok) return;  // boot without display rather than hanging in setup()
+  display.fillScreen(SSD1306_WHITE);
+  display.display();
+  delay(150);
+  display.fillScreen(SSD1306_BLACK);
+  display.display();
+  delay(150);
   display.clearDisplay();
   display.setTextColor(SSD1306_BLACK);
   display.fillScreen(SSD1306_WHITE);
