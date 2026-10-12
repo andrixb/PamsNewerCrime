@@ -41,7 +41,8 @@ implementation is original code, written from scratch for Teensy 4 hardware.
   assignable to modulate range / width / phase / delay / prob / ratio, with signed scale
 - 2 save/load banks + automatic persistence (EEPROM emulation, CRC-checked, autosave
   after 3 s idle; format v3)
-- 128x64 OLED status bar: live output voltage bars + gate indicators
+- 128x64 OLED: a tall right-side voltage meter (live output level + gate strip,
+  one bar per output) beside the parameter list; hidden on the SYS page
 
 ## Hardware
 

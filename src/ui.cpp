@@ -765,38 +765,46 @@ void ui_draw() {
       gfx->printf("%s", SYS_ACTIONS[i]);
       if (i == param_idx) gfx->setTextColor(PNC_WHITE);
     }
-  } else {
-    // Master and channel pages share one 3-row scrolling window (y 12/26/40),
-    // clear of the voltage bars at y52. Master indices are raw 0..3; channel
-    // positions map through the app's parameter table.
-    uint8_t cnt = param_count();
-    const uint8_t rows = 3;
-    uint8_t top = 0;
-    if (cnt > rows) {
-      if (param_idx >= rows - 1) top = param_idx >= cnt - 1 ? cnt - rows : param_idx - 1;
-    }
-    for (uint8_t r = 0; r < rows; r++) {
-      uint8_t i_pos = top + r;
-      if (i_pos >= cnt) break;
-      uint8_t raw = is_master() ? i_pos : raw_idx(i_pos);
-      int16_t y = 12 + r * 14;
-      if (i_pos == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
-      gfx->setCursor(0, y);
-      gfx->printf("%-9s", label_of(ch, raw));
-      fmt_val(ch, raw, buf, sizeof(buf));
-      gfx->printf("%s", buf);
-      if (i_pos == param_idx) gfx->setTextColor(PNC_WHITE);
-    }
+    oled_flush();
+    return;   // no output meter on the SYS page
   }
 
+  // Master and channel pages: a 3-row scrolling list on the left, a tall vertical
+  // output meter panel on the right. The list and its selection highlight stay left
+  // of BAR_X so text never runs under the bars.
+  const uint8_t BAR_X = 88;            // right meter column starts here
+  const uint8_t BAR_TOP = 12, BAR_BOT = 60;
+  const uint8_t text_w = BAR_X;        // selectable text strip width
+  uint8_t cnt = param_count();
+  const uint8_t rows = 3;
+  uint8_t top = 0;
+  if (cnt > rows) {
+    if (param_idx >= rows - 1) top = param_idx >= cnt - 1 ? cnt - rows : param_idx - 1;
+  }
+  for (uint8_t r = 0; r < rows; r++) {
+    uint8_t i_pos = top + r;
+    if (i_pos >= cnt) break;
+    uint8_t raw = is_master() ? i_pos : raw_idx(i_pos);
+    int16_t y = 12 + r * 14;
+    if (i_pos == param_idx) { gfx->fillRect(0, y - 1, text_w, 12, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
+    gfx->setCursor(0, y);
+    gfx->printf("%-8s", label_of(ch, raw));
+    fmt_val(ch, raw, buf, sizeof(buf));
+    gfx->printf("%s", buf);
+    if (i_pos == param_idx) gfx->setTextColor(PNC_WHITE);
+  }
+
+  // Right-side output meter: one tall bar per output, filled from the bottom to
+  // the live voltage, with a gate strip beneath.
+  uint8_t bw = (128 - BAR_X) / NUM_OUTPUTS;
+  uint8_t inner_h = BAR_BOT - BAR_TOP - 2;
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
-    uint16_t mv = channels[i].out_mv;
-    uint8_t x = i * (128 / NUM_OUTPUTS);
-    uint8_t w = (128 / NUM_OUTPUTS) - 3;
-    uint8_t h = mv * 10 / DAC_MAX_MV;
-    gfx->drawRect(x, 52, w, 10, PNC_WHITE);
-    if (h) gfx->fillRect(x + 1, 61 - h, w - 2, h, PNC_WHITE);
-    if (channels[i].gate_state) gfx->fillRect(x, 63, w, 1, PNC_WHITE);
+    uint8_t x = BAR_X + i * bw;
+    gfx->drawRect(x, BAR_TOP, bw - 1, BAR_BOT - BAR_TOP, PNC_WHITE);
+    uint32_t mv = channels[i].out_mv;
+    uint8_t h = (uint8_t)((mv * inner_h) / DAC_MAX_MV);
+    if (h) gfx->fillRect(x + 1, BAR_BOT - 1 - h, bw - 3, h, PNC_WHITE);
+    if (channels[i].gate_state) gfx->fillRect(x, BAR_BOT + 2, bw - 1, 2, PNC_WHITE);
   }
   oled_flush();
 }
