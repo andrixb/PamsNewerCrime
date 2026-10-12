@@ -30,19 +30,19 @@ void capture_state(StoreBlob &blob) {
   memset(&blob, 0, sizeof(blob));
   blob.magic = STORE_MAGIC;
   blob.version = STORE_VERSION;
-  blob.master.bpm_cent = clock.bpm_cent;
-  blob.master.source = clock.source;
-  blob.master.ext_ppqn = clock.ext_ppqn;
-  blob.master.running = clock.running ? 1 : 0;
+  blob.master.bpm_cent = masterClock.bpm_cent;
+  blob.master.source = masterClock.source;
+  blob.master.ext_ppqn = masterClock.ext_ppqn;
+  blob.master.running = masterClock.running ? 1 : 0;
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) blob.ch[i] = channels[i].p;
   blob.crc = crc32((const uint8_t *)&blob.master, PAYLOAD_LEN);
 }
 
 void restore_state(const StoreBlob &blob) {
-  clock.bpm_cent = blob.master.bpm_cent;
-  clock.source = blob.master.source;
-  clock.ext_ppqn = blob.master.ext_ppqn;
-  clock.running = blob.master.running;
+  masterClock.bpm_cent = blob.master.bpm_cent;
+  masterClock.source = blob.master.source;
+  masterClock.ext_ppqn = blob.master.ext_ppqn;
+  masterClock.running = blob.master.running;
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     channels[i].p = blob.ch[i];
     channel_rebuild_euclid(channels[i]);

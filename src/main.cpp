@@ -12,8 +12,8 @@ static uint16_t cv1_f = 2048, cv2_f = 2048;
 static uint32_t last_save_ms = 0;
 static uint32_t last_ui_ms = 0;
 
-static void IRAM_ATTR ck_isr() {
-  clock.pulse_external();
+static void ck_isr() {
+  masterClock.pulse_external();
 }
 
 static void control_tick() {
@@ -25,8 +25,8 @@ static void control_tick() {
     cv2_f = cv2_f - (cv2_f >> 2) + (r2 >> 2);
     ui_service();
   }
-  clock.tick();
-  uint32_t delta = clock.take_delta();
+  masterClock.tick();
+  uint32_t delta = masterClock.take_delta();
   channels_update(delta, cv1_f >> 4, cv2_f >> 4);
 }
 
@@ -46,7 +46,7 @@ void setup() {
   dac_init();
   storage_init();
   ui_init();
-  clock.begin();
+  masterClock.begin();
   pinMode(PIN_CK_IN, INPUT_PULLDOWN);
   attachInterrupt(digitalPinToInterrupt(PIN_CK_IN), ck_isr, RISING);
   ctrl_timer.begin(control_tick, (uint32_t)(1000000 / CONTROL_RATE_HZ));

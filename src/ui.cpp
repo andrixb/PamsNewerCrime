@@ -43,7 +43,6 @@ static uint8_t page = 0;
 static uint8_t param_idx = 0;
 
 static uint8_t enc_state = 0;
-static uint32_t last_sw_ms = 0;
 static uint32_t b2_down_ms = 0;
 static bool b2_was_down = false;
 
@@ -55,10 +54,10 @@ static uint8_t param_count() { return is_master() ? MASTER_PARAM_COUNT : (is_sys
 static int16_t get_val(uint8_t ch, uint8_t idx) {
   if (is_master()) {
     switch (idx) {
-      case 0: return clock.bpm_cent;
-      case 1: return clock.source;
-      case 2: return clock.ext_ppqn;
-      default: return clock.running;
+      case 0: return masterClock.bpm_cent;
+      case 1: return masterClock.source;
+      case 2: return masterClock.ext_ppqn;
+      default: return masterClock.running;
     }
   }
   ChannelParams &p = channels[ch].p;
@@ -90,10 +89,10 @@ static int16_t get_val(uint8_t ch, uint8_t idx) {
 static void set_val(uint8_t ch, uint8_t idx, int32_t v) {
   if (is_master()) {
     switch (idx) {
-      case 0: clock.bpm_cent = constrain(v, BPM_MIN, BPM_MAX); break;
-      case 1: clock.source = v & 1; break;
-      case 2: clock.ext_ppqn = constrain(v, 1, 48); break;
-      default: clock.running = v ? 1 : 0; break;
+      case 0: masterClock.bpm_cent = constrain(v, BPM_MIN, BPM_MAX); break;
+      case 1: masterClock.source = v & 1; break;
+      case 2: masterClock.ext_ppqn = constrain(v, 1, 48); break;
+      default: masterClock.running = v ? 1 : 0; break;
     }
     mark_dirty();
     return;
@@ -116,7 +115,8 @@ static void set_val(uint8_t ch, uint8_t idx, int32_t v) {
     case P_PROB: p.prob = constrain(v, 0, 100); break;
     case P_EUEN: p.eucl_en = v ? 1 : 0; touch_euclid = true; break;
     case P_EULEN: p.eucl_len = constrain(v, 1, EUCLID_MAX_LEN);
-                  if (p.eucl_fill > p.eucl_len) p.eucl_fill = p.eucl_len; touch_euclid = true; break;
+                  if (p.eucl_fill > p.eucl_len) p.eucl_fill = p.eucl_len;
+                  touch_euclid = true; break;
     case P_EUFILL: p.eucl_fill = constrain(v, 0, p.eucl_len); touch_euclid = true; break;
     case P_EUROT: p.eucl_rot = constrain(v, 0, p.eucl_len ? p.eucl_len - 1 : 0); break;
     case P_SLEN: p.step_len = constrain(v, 1, MAX_STEPS); break;
@@ -202,10 +202,10 @@ static void do_action(uint8_t idx) {
     case 2: if (storage_load(SLOT_BANK1, blob)) restore_state(blob); break;
     case 3: if (storage_load(SLOT_BANK2, blob)) restore_state(blob); break;
     default:
-      clock.bpm_cent = 12000;
-      clock.source = 0;
-      clock.ext_ppqn = 24;
-      clock.running = true;
+      masterClock.bpm_cent = 12000;
+      masterClock.source = 0;
+      masterClock.ext_ppqn = 24;
+      masterClock.running = true;
       channels_init();
       break;
   }
@@ -272,13 +272,13 @@ void ui_service() {
   if (b2 && !b2_was_down) { b2_down_ms = now; b2_was_down = true; }
   if (b2) {
     if (now - b2_down_ms > 600 && b2_was_down) {
-      clock.running = !clock.running;
+      masterClock.running = !masterClock.running;
       mark_dirty();
       b2_was_down = false;
     }
   } else if (b2_was_down) {
     if (now - b2_down_ms < 600) {
-      if (!clock.running) clock.running = true;
+      if (!masterClock.running) masterClock.running = true;
       else channels_reset();
     }
     b2_was_down = false;
@@ -293,19 +293,19 @@ void ui_draw() {
 
   if (is_master()) {
     display.setCursor(0, 0);
-    display.printf("M %d.%02d %s", clock.bpm_cent / 100, clock.bpm_cent % 100,
-                   clock.source ? "EXT" : "INT");
-    if (clock.source && clock.measured_bpm_cent()) {
+    display.printf("M %d.%02d %s", masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
+                   masterClock.source ? "EXT" : "INT");
+    if (masterClock.source && masterClock.measured_bpm_cent()) {
       display.setCursor(80, 0);
-      display.printf("%d.%02d", clock.measured_bpm_cent() / 100, clock.measured_bpm_cent() % 100);
+      display.printf("%d.%02d", masterClock.measured_bpm_cent() / 100, masterClock.measured_bpm_cent() % 100);
     }
   } else if (is_sys()) {
     display.setCursor(0, 0);
     display.printf("SYS");
   } else {
     display.setCursor(0, 0);
-    display.printf("OUT%d %d.%02d %s", ch + 1, clock.bpm_cent / 100, clock.bpm_cent % 100,
-                   clock.running ? ">" : "||");
+    display.printf("OUT%d %d.%02d %s", ch + 1, masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
+                   masterClock.running ? ">" : "||");
   }
 
   if (is_sys()) {

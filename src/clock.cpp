@@ -1,6 +1,6 @@
 #include "clock.h"
 
-MasterClock clock;
+MasterClock masterClock;
 
 void MasterClock::begin() {
   pinMode(PIN_CK_IN, INPUT);

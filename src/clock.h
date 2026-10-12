@@ -27,4 +27,4 @@ private:
   uint16_t ext_bpm_cent = 0;
 };
 
-extern MasterClock clock;
+extern MasterClock masterClock;
