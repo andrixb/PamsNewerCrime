@@ -70,8 +70,8 @@ Both knobs and both buttons are wired and live:
 
 - **Right encoder** — change the selected parameter's value (hold its push while
   turning = fine steps for BPM / voltage)
-- **Left encoder** — select the parameter; rolling past either end wraps into
-  the neighbouring page
+- **Left encoder** — select the parameter; it wraps within the current page
+  only (the panel buttons change pages)
 - **Left encoder push** — tap = start/stop master clock (SYS page: run the
   highlighted action); **hold = open the app menu**
 - **Right encoder push** — tap = next parameter; hold = reset all channel phases

@@ -606,17 +606,14 @@ static void page_prev() {
 // RIGHT encoder turn moves the selection; rolling past the end of a page's
 // params wraps into the next page (and the start wraps back to the previous).
 static void select_rel(int8_t d) {
-  if (is_sys()) {
-    int8_t n = (int8_t)param_idx + d;
-    if (n < 0) n = 0;
-    if (n >= (int8_t)SYS_ACTION_COUNT) n = SYS_ACTION_COUNT - 1;
-    param_idx = n;
-    return;
-  }
-  int8_t n = (int8_t)param_idx + d;
-  if (n < 0) { page_prev(); param_idx = param_count() - 1; }
-  else if (n >= (int8_t)param_count()) { page_next(); param_idx = 0; }
-  else param_idx = n;
+  uint8_t cnt = param_count();
+  if (!cnt) { param_idx = 0; return; }
+  int16_t n = (int16_t)param_idx + d;
+  // Stay on the selected page: wrap within its own parameters. Page changes
+  // are the panel buttons' job, not the left encoder's.
+  if (n < 0) n = cnt - 1;
+  else if (n >= cnt) n = 0;
+  param_idx = (uint8_t)n;
 }
 
 // Poll all encoder + button pins once per 1 kHz tick (Phazerville UI::Poll model).
