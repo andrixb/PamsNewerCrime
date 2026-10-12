@@ -10,9 +10,13 @@ void MasterClock::pulse_external() {
   ext_pulses++;
 }
 
+void MasterClock::pulse_midi() {
+  if (source == 2 && running) midi_pulses++;
+}
+
 void MasterClock::reset_phase() {
   frac_acc = 0;
-  consumed_pulses = ext_pulses;
+  consumed_pulses = (source == 2) ? midi_pulses : ext_pulses;
   ext_avg_us = 0;
 }
 
@@ -34,7 +38,8 @@ void MasterClock::tick() {
       delta_x256 += whole;
     }
   } else {
-    uint32_t pulses = ext_pulses;
+    bool is_midi = (source == 2);
+    uint32_t pulses = is_midi ? midi_pulses : ext_pulses;
     uint32_t newp = pulses - consumed_pulses;
     if (!newp) {
       if (ext_avg_us > 0) {
@@ -55,7 +60,7 @@ void MasterClock::tick() {
     }
     ext_last_us = now;
 
-    uint8_t ppqn = constrain(ext_ppqn, 1, 48);
+    uint8_t ppqn = is_midi ? MIDI_CLOCK_PPQN : constrain(ext_ppqn, 1, 48);
     uint32_t t256 = (uint32_t)TICKS_PER_QUARTER * 256 / ppqn;
     uint32_t frac = (uint32_t)TICKS_PER_QUARTER * 256 - t256 * ppqn;
     delta_x256 += newp * t256;

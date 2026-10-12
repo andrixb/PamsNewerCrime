@@ -34,3 +34,8 @@
 
 #define DISPLAY_ADDRESS 0x3C
 #define DISPLAY_RESET   -1
+
+// MIDI clock input: Serial1 RX on pin 0 (Teensy 4.0/4.1), feed through a
+// 6N138/6N139 optocoupler (or resistor divider) per the MIDI spec.
+#define MIDI_SERIAL        Serial1
+#define MIDI_CLOCK_PPQN    24

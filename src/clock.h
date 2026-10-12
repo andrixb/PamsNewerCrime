@@ -12,6 +12,7 @@ public:
   void begin();
   void tick();
   void pulse_external();
+  void pulse_midi();
   void reset_phase();
   uint32_t take_delta();
   uint16_t measured_bpm_cent() const { return ext_bpm_cent; }
@@ -21,6 +22,7 @@ private:
   uint32_t delta_x256 = 0;
   uint64_t frac_acc = 0;
   volatile uint32_t ext_pulses = 0;
+  volatile uint32_t midi_pulses = 0;
   uint32_t consumed_pulses = 0;
   uint64_t ext_last_us = 0;
   float ext_avg_us = 0;

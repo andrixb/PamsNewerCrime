@@ -90,7 +90,11 @@ static void set_val(uint8_t ch, uint8_t idx, int32_t v) {
   if (is_master()) {
     switch (idx) {
       case 0: masterClock.bpm_cent = constrain(v, BPM_MIN, BPM_MAX); break;
-      case 1: masterClock.source = v & 1; break;
+      case 1: {
+        uint8_t s = (uint8_t)(((v % 3) + 3) % 3);
+        if (s != masterClock.source) { masterClock.source = s; masterClock.reset_phase(); }
+        break;
+      }
       case 2: masterClock.ext_ppqn = constrain(v, 1, 48); break;
       default: masterClock.running = v ? 1 : 0; break;
     }
@@ -168,12 +172,23 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
   }
 }
 
+static const char *SRC_NAMES[3] = { "int", "ext", "midi" };
+static volatile int8_t pending_action = -1;
+static void do_action(uint8_t idx);
+
+void ui_run_pending() {
+  if (pending_action < 0) return;
+  int8_t a = pending_action;
+  pending_action = -1;
+  do_action((uint8_t)a);
+}
+
 static void fmt_val(uint8_t ch, uint8_t idx, char *buf, size_t n) {
   int16_t v = get_val(ch, idx);
   if (is_master()) {
     switch (idx) {
       case 0: snprintf(buf, n, "%d.%02d", v / 100, v % 100); break;
-      case 1: snprintf(buf, n, v ? "ext" : "int"); break;
+      case 1: snprintf(buf, n, "%s", SRC_NAMES[v % 3]); break;
       case 2: snprintf(buf, n, "%d", v); break;
       default: snprintf(buf, n, v ? "run" : "stop"); break;
     }
@@ -268,7 +283,7 @@ void ui_service() {
     }
   } else if (sw_down_ms) {
     if (!sw_handled) {
-      if (is_sys()) do_action(param_idx);
+      if (is_sys()) pending_action = param_idx;
       else param_idx = (param_idx + 1) % param_count();
     }
     sw_down_ms = 0;
@@ -301,7 +316,7 @@ void ui_draw() {
   if (is_master()) {
     display.setCursor(0, 0);
     display.printf("M %d.%02d %s", masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
-                   masterClock.source ? "EXT" : "INT");
+                   masterClock.source == 2 ? "MIDI" : (masterClock.source ? "EXT" : "INT"));
     if (masterClock.source && masterClock.measured_bpm_cent()) {
       display.setCursor(80, 0);
       display.printf("%d.%02d", masterClock.measured_bpm_cent() / 100, masterClock.measured_bpm_cent() % 100);

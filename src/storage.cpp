@@ -47,6 +47,7 @@ void restore_state(const StoreBlob &blob) {
     channels[i].p = blob.ch[i];
     channel_rebuild_euclid(channels[i]);
   }
+  masterClock.reset_phase();
   channels_reset();
 }
 
