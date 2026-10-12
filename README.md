@@ -138,8 +138,22 @@ pio run -e teensy41        # Teensy 4.1, 4 outs
 pio run -e teensy40 -t upload
 ```
 
-See the [Building wiki page](docs/wiki/Building.md) for configuration flags, the
-source layout, and CI.
+### Develop / flash locally (no git tag needed)
+
+A `Makefile` wraps PlatformIO so you can iterate straight on the board:
+
+```
+make            # build default env (teensy40)
+make flash      # build + flash to the connected Teensy
+make monitor    # 115200 serial console
+make size       # flash/RAM report
+make ENV=teensy41 flash   # build/flash the 4.1 target instead
+```
+
+Put the board in bootloader mode first (hold its program button ~4 s → orange
+LED) if it isn't auto-detected. `pio` is resolved from `PATH` or the PlatformIO
+installer's `~/.platformio/penv`. See the
+[Building wiki page](docs/wiki/Building.md) for config flags and source layout.
 
 ## Notes / current limitations
 
