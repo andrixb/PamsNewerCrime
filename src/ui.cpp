@@ -712,16 +712,11 @@ void ui_draw() {
   char buf[20];
 
   if (is_master()) {
+    uint16_t shown = masterClock.bpm_cent;
+    if (masterClock.source && masterClock.measured_bpm_cent()) shown = masterClock.measured_bpm_cent();
     gfx->setCursor(0, 0);
-    gfx->printf("M %d.%02d %s", masterClock.bpm_cent / 100, masterClock.bpm_cent % 100,
+    gfx->printf("M %d.%02d %s", shown / 100, shown % 100,
                 masterClock.source ? "EXT" : "INT");
-    if (masterClock.source && masterClock.measured_bpm_cent()) {
-      gfx->fillRect(METR_X - 30, 0, 30, 8, PNC_WHITE);
-      gfx->setTextColor(PNC_BLACK);
-      gfx->setCursor(METR_X - 30, 0);
-      gfx->printf("%d.%02d", masterClock.measured_bpm_cent() / 100, masterClock.measured_bpm_cent() % 100);
-      gfx->setTextColor(PNC_WHITE);
-    }
   } else if (is_sys()) {
     gfx->setCursor(0, 0);
     gfx->printf("SYS");
@@ -793,10 +788,20 @@ void ui_draw() {
     uint8_t raw = is_master() ? i_pos : raw_idx(i_pos);
     int16_t y = 12 + r * 14;
     if (i_pos == param_idx) { gfx->fillRect(0, y - 1, text_w, 12, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
-    gfx->setCursor(0, y);
-    gfx->printf("%-7s", label_of(ch, raw));      // 7*6=42px, leaves room for the value
     fmt_val(ch, raw, buf, sizeof(buf));
-    buf[6] = 0;                                  // clamp value to ~ (42+6*6) < text_w
+    // Value right-aligned to the column edge; label left, truncated to whatever
+    // room remains (>=1 char gap). The two can never overlap or hit the meter.
+    int16_t vlen = (int16_t)strlen(buf);
+    int16_t vx = (int16_t)text_w - 6 * vlen;
+    if (vx < 0) vx = 0;
+    int16_t lmax = (vx - 6) / 6;         // label chars that fit left of the value
+    if (lmax < 0) lmax = 0;
+    const char *lab = label_of(ch, raw);
+    int16_t l = 0;
+    while (lab[l] && l < lmax) l++;
+    gfx->setCursor(0, y);
+    for (int16_t k = 0; k < l; k++) gfx->write(lab[k]);
+    gfx->setCursor(vx, y);
     gfx->printf("%s", buf);
     if (i_pos == param_idx) gfx->setTextColor(PNC_WHITE);
   }
