@@ -3,7 +3,7 @@
 #include "storage.h"
 #include <Adafruit_GFX.h>
 
-#if defined(HARDWARE_O_C) && HARDWARE_O_C == 1
+#if IS_O_C
 // ---------------------------------------------------------------------------
 // Genuine O_C panel: SH1106 128x64 on SPI (shared bus with the DAC8565).
 // Own framebuffer + per-page diff flush; noInterrupts() around each page so
@@ -107,7 +107,12 @@ static const char *LOGIC_NAMES[] = { "--", "and", "or", "xor", "nand", "nor" };
 static const char *SRC_NAMES[3] = { "int", "ext", "midi" };
 #define SRC_COUNT (HAS_MIDI_IN ? 3 : 2)
 
-static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A", "load bank B", "defaults" };
+static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A", "load bank B", "defaults"
+#if !IS_O_C
+  , "oled: ssd1306", "oled: sh1106"
+#endif
+};
+#define SYS_ACTION_COUNT (sizeof(SYS_ACTIONS) / sizeof(SYS_ACTIONS[0]))
 
 #define P_RATIO 0
 #define P_MODE 1
@@ -152,7 +157,7 @@ static bool b2_was_down = false;
 static uint8_t ch_of_page() { return page - 1; }
 static bool is_master() { return page == 0; }
 static bool is_sys() { return page == NUM_OUTPUTS + 1; }
-static uint8_t param_count() { return is_master() ? MASTER_PARAM_COUNT : (is_sys() ? 5 : CH_PARAM_COUNT); }
+static uint8_t param_count() { return is_master() ? MASTER_PARAM_COUNT : (is_sys() ? SYS_ACTION_COUNT : CH_PARAM_COUNT); }
 
 static int16_t get_val(uint8_t ch, uint8_t idx) {
   if (is_master()) {
@@ -301,6 +306,9 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
 
 static volatile int8_t pending_action = -1;
 static void do_action(uint8_t idx);
+#if !IS_O_C
+static void oled_pick_mode(uint8_t mode);
+#endif
 
 void ui_run_pending() {
   if (pending_action < 0) return;
@@ -352,6 +360,10 @@ static void do_action(uint8_t idx) {
     case 1: capture_state(blob); storage_save(SLOT_BANK2, blob); break;
     case 2: if (storage_load(SLOT_BANK1, blob)) restore_state(blob); break;
     case 3: if (storage_load(SLOT_BANK2, blob)) restore_state(blob); break;
+#if !IS_O_C
+    case 5: oled_pick_mode(0); return;   // no autosave mark for display choice
+    case 6: oled_pick_mode(2); return;
+#endif
     default:
       masterClock.bpm_cent = 12000;
       masterClock.source = 0;
@@ -363,7 +375,7 @@ static void do_action(uint8_t idx) {
   mark_dirty();
 }
 
-#if defined(HARDWARE_O_C) && HARDWARE_O_C == 1
+#if IS_O_C
 static void oled_flush() { oled_spi.flush(); }
 #else
 static void i2c_bus_recovery() {
@@ -410,13 +422,21 @@ static bool oled_setup_mode(uint8_t mode, uint8_t addr) {
 }
 
 static uint8_t oled_preferred_mode() {
-#if DISPLAY_SH1106
-  return 2;
-#else
-  return 0;
-#endif
+  uint8_t m = oled_mode_load();
+  return (m == 2) ? 2 : 0;
 }
 
+// chosen from the SYS page: persist and re-init immediately
+static void oled_pick_mode(uint8_t mode) {
+  oled_mode_save(mode);
+  if (display_addr && oled_setup_mode(mode, display_addr)) {
+    gfx->fillScreen(PNC_BLACK);
+    oled_flush();
+  }
+}
+
+// First boot (no saved choice): flash panel with 1=SSD1306, 2=SH1106;
+// user picks the one that flashed in the SYS page, choice is remembered.
 static void oled_probe(uint8_t addr) {
   Serial.println("pnc: probe -> count white flashes: 1=SSD1306 2=SH1106");
   for (uint8_t m = 0; m <= 2; m += 2) {
@@ -429,6 +449,7 @@ static void oled_probe(uint8_t addr) {
     }
     delay(600);
   }
+  oled_setup_mode(0, addr);
 }
 #endif
 
@@ -440,7 +461,7 @@ void ui_init() {
   enc_state = (digitalRead(PIN_ENC_B) ? 1 : 0) | (digitalRead(PIN_ENC_A) ? 2 : 0);
   param_idx = 0;
 
-#if defined(HARDWARE_O_C) && HARDWARE_O_C == 1
+#if IS_O_C
   // dac_init() already ran SPI.begin(); panel init needs no address
   oled_spi.begin();
   display_ok = true;
@@ -455,6 +476,7 @@ void ui_init() {
     if (Wire.endTransmission() == 0) display_addr = ADDRS[i];
   }
   uint8_t pref = oled_preferred_mode();
+  bool first_boot = (oled_mode_load() == 0xFF);
   display_ok = display_addr && oled_setup_mode(pref, display_addr);
   Serial.printf("pnc: boot, oled %s @0x%02X mode %u\n",
                 display_ok ? "init" : "FAIL", display_addr, pref);
@@ -466,7 +488,7 @@ void ui_init() {
     }
     Serial.println();
   }
-  if (display_ok) {
+  if (display_ok && first_boot) {
     oled_probe(display_addr);
     oled_setup_mode(pref, display_addr);
   }
@@ -494,15 +516,25 @@ void ui_service() {
   uint8_t b = digitalRead(PIN_ENC_B) ? 1 : 0;
   uint8_t st = b | (a << 1);
   static const int8_t LOOKUP[16] = { 0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0 };
-  int8_t d = LOOKUP[(enc_state << 2) | st];
-  if (d != 0 && st != enc_state) { enc_state = st; adjust(d); }
-  else enc_state = st;
+  // settle filter: accept a new quadrature state only after it is stable
+  // for 2 ms, so contact bounce and mid-flight samples can't fake a step
+  static uint8_t enc_raw = 0xFF;
+  static uint32_t enc_raw_ms = 0;
+  if (st != enc_raw) {
+    enc_raw = st;
+    enc_raw_ms = now;
+  } else if (st != enc_state && (uint32_t)(now - enc_raw_ms) >= 2) {
+    int8_t d = LOOKUP[(enc_state << 2) | st];
+    if (d) adjust(d);
+    enc_state = st;
+  }
 
   static uint32_t sw_down_ms = 0;
+  static uint32_t sw_up_ms = 0;
   static bool sw_handled = false;
   if (digitalRead(PIN_ENC_SW) == LOW) {
-    if (!sw_down_ms) { sw_down_ms = now; sw_handled = false; }
-    else if (!sw_handled && now - sw_down_ms > 500) {
+    if (!sw_down_ms && (uint32_t)(now - sw_up_ms) > 30) { sw_down_ms = now; sw_handled = false; }
+    else if (!sw_handled && sw_down_ms && now - sw_down_ms > 500) {
       page = (page + 1) % (NUM_OUTPUTS + 2);
       param_idx = 0;
       sw_handled = true;
@@ -513,10 +545,13 @@ void ui_service() {
       else param_idx = (param_idx + 1) % param_count();
     }
     sw_down_ms = 0;
+    sw_up_ms = now;
   }
 
   bool b2 = digitalRead(PIN_BTN_B2) == LOW;
-  if (b2 && !b2_was_down) { b2_down_ms = now; b2_was_down = true; }
+  static uint32_t b2_up_ms = 0;
+  if (b2 && !b2_was_down && (uint32_t)(now - b2_up_ms) > 30) { b2_down_ms = now; b2_was_down = true; }
+  else if (!b2 && b2_was_down) b2_up_ms = now;
   if (b2) {
     if (now - b2_down_ms > 600 && b2_was_down) {
       masterClock.running = !masterClock.running;
@@ -534,8 +569,8 @@ void ui_service() {
 
 void ui_draw() {
   if (!display_ok) return;
-  gfx->fillScreen(PNC_WHITE);
-  gfx->setTextColor(PNC_BLACK);
+  gfx->fillScreen(PNC_BLACK);
+  gfx->setTextColor(PNC_WHITE);
   uint8_t ch = is_master() ? 0 : ch_of_page();
   char buf[20];
 
@@ -557,12 +592,12 @@ void ui_draw() {
   }
 
   if (is_sys()) {
-    for (uint8_t i = 0; i < 5; i++) {
+    for (uint8_t i = 0; i < SYS_ACTION_COUNT; i++) {
       int16_t y = 12 + i * 10;
-      if (i == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_BLACK); gfx->setTextColor(PNC_WHITE); }
+      if (i == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
       gfx->setCursor(0, y);
       gfx->printf("%s", SYS_ACTIONS[i]);
-      if (i == param_idx) gfx->setTextColor(PNC_BLACK);
+      if (i == param_idx) gfx->setTextColor(PNC_WHITE);
     }
   } else {
     uint8_t cnt = param_count();
@@ -575,12 +610,12 @@ void ui_draw() {
       uint8_t i = top + r;
       if (i >= cnt) break;
       int16_t y = 12 + r * 14;
-      if (i == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_BLACK); gfx->setTextColor(PNC_WHITE); }
+      if (i == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
       gfx->setCursor(0, y);
       gfx->printf("%-9s", label_of(ch, i));
       fmt_val(ch, i, buf, sizeof(buf));
       gfx->printf("%s", buf);
-      if (i == param_idx) gfx->setTextColor(PNC_BLACK);
+      if (i == param_idx) gfx->setTextColor(PNC_WHITE);
     }
   }
 
@@ -589,9 +624,9 @@ void ui_draw() {
     uint8_t x = i * (128 / NUM_OUTPUTS);
     uint8_t w = (128 / NUM_OUTPUTS) - 3;
     uint8_t h = mv * 10 / DAC_MAX_MV;
-    gfx->drawRect(x, 52, w, 10, PNC_BLACK);
-    if (h) gfx->fillRect(x + 1, 61 - h, w - 2, h, PNC_BLACK);
-    if (channels[i].gate_state) gfx->fillRect(x, 63, w, 1, PNC_BLACK);
+    gfx->drawRect(x, 52, w, 10, PNC_WHITE);
+    if (h) gfx->fillRect(x + 1, 61 - h, w - 2, h, PNC_WHITE);
+    if (channels[i].gate_state) gfx->fillRect(x, 63, w, 1, PNC_WHITE);
   }
   oled_flush();
 }

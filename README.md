@@ -40,7 +40,7 @@ implementation is original code, written from scratch for Teensy 4 hardware.
   sources can be CV1, CV2 or any other output's live voltage; each source is
   assignable to modulate range / width / phase / delay / prob / ratio, with signed scale
 - 2 save/load banks + automatic persistence (EEPROM emulation, CRC-checked, autosave
-  after 3 s idle; format v2 — pre-MIDI firmwares cannot load v2 blobs and vice versa)
+  after 3 s idle; format v3)
 - 128x64 OLED status bar: live output voltage bars + gate indicators
 
 ## Hardware
@@ -49,13 +49,12 @@ Two hardware profiles are supported, selected at build time:
 
 | Build env | Target | Display | DAC |
 |-----------|--------|---------|-----|
-| `teensy40_oc` | **genuine O_C board** (14HP original or uO_c 8HP micro), Teensy 4.0 drop-in | SH1106 on SPI, CS=8 DC=6 RST=7 | DAC8565 quad on same SPI, CS=10 RST=9, **0-10 V** |
-| `teensy40` / `teensy41` | DIY breadboard per the wiring table below | SSD1306/SH1106 on I2C (18/19) | MCP4822 x2-x4 on CS 10/9/8/7, **0-4.09 V** |
-| `teensy40_sh1106` / `teensy41_sh1106` | same as above, SH1106 I2C modules | | |
+| `teensy40` / `teensy41` | **genuine O_C board** (14HP original or uO_c 8HP micro), Teensy 4.x drop-in (default) | SH1106 on SPI, CS=8 DC=6 RST=7 | DAC8565 quad on same SPI, CS=10 RST=9, **0-10 V** |
+| `teensy40_diy` / `teensy41_diy` | DIY breadboard per the wiring table below | SSD1306 or SH1106 on I2C (18/19), chosen at runtime on the SYS page | MCP4822 x2-x4 on CS 10/9/8/7, **0-4.09 V** |
 
-### O_C hardware profile (`teensy40_oc`)
+### O_C hardware profile (default: `teensy40`)
 
-If your Teensy 4.0 sits on an O_C / uO_c shield, flash `pams-newer-crime-teensy40-oc.hex`.
+If your Teensy 4.0 sits on an O_C / uO_c shield, flash `pams-newer-crime-teensy40.hex`.
 It uses the exact pin map of the O_C family (verified against Phazerville):
 
 | Function | Teensy 4.0 pin | O_C side |
@@ -71,7 +70,7 @@ MIDI input is unavailable on this profile (pin 0 is the TR1 jack); external cloc
 via TR jacks works. Note: O_C output stage calibration differs from O_C firmware —
 outputs are linear 0-10 V without the module's calibration table.
 
-### DIY breadboard profile
+### DIY breadboard profile (`teensy40_diy` / `teensy41_diy`)
 
 Teensy 4 has no DAC, so CV outputs use SPI DACs (12-bit, buffered, gain x2).
 Outputs are **0-4.09 V**; add an op-amp gain/offset stage (e.g. TL072 x2 + offset)
@@ -106,9 +105,10 @@ Other pins:
 Many "128x64 I2C OLED" modules carry an **SH1106** instead of the SSD1306 its
 label claims. An SH1106 acknowledges I2C at 0x3C and `begin()` reports success,
 yet stays completely blank (132-column RAM with +2 offset, page addressing only).
-If the boot self-test (white flash) doesn't appear on the `teensy40` build, flash
-`teensy40_sh1106` instead. Both I2C builds are auto-probed at boot: the panel
-flashes **1x = SSD1306**, **2x = SH1106** (also logged to the debug console).
+The DIY build handles both: on **first boot** the panel flashes **1x = SSD1306**,
+**2x = SH1106** (also logged to the debug console). Pick the one that flashed on
+the **SYS page** (`oled: ssd1306` / `oled: sh1106`); the choice is saved to EEPROM
+and the probe only runs again after the stored choice is cleared.
 
 ### MIDI clock input (DIY profile)
 

@@ -28,3 +28,5 @@ void capture_state(StoreBlob &blob);
 void restore_state(const StoreBlob &blob);
 bool state_dirty();
 void mark_dirty();
+uint8_t oled_mode_load();      // 0 = SSD1306, 2 = SH1106, 0xFF = unknown
+void oled_mode_save(uint8_t mode);

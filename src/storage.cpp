@@ -66,3 +66,17 @@ void storage_init() {
   channels_init();
   if (storage_load(SLOT_ACTIVE, blob)) restore_state(blob);
 }
+
+struct OledModeBlob { uint8_t magic; uint8_t mode; };
+static const uint32_t OLED_MODE_OFFSET = 1536;
+
+uint8_t oled_mode_load() {
+  OledModeBlob b;
+  EEPROM.get(OLED_MODE_OFFSET, b);
+  return b.magic == 0xA5 ? b.mode : 0xFF;
+}
+
+void oled_mode_save(uint8_t mode) {
+  OledModeBlob b{0xA5, mode};
+  EEPROM.put(OLED_MODE_OFFSET, b);
+}

@@ -18,18 +18,24 @@
 
 // ---------------------------------------------------------------------------
 // Hardware profiles.
-//   DIY (default)  : breadboard design from the README - MCP4822 DACs on
-//                    software CS 7..10, SSD1306/SH1106 on I2C (18/19).
-//   HARDWARE_O_C   : genuine O_C board (14HP original / uO_c 8HP micro),
-//                    Teensy 4.0. DAC8565 (quad, 0-10V, inverted output stage)
-//                    on SPI CS=10 RST=9; SH1106 OLED on the same SPI bus with
-//                    CS=8 DC=6 RST=7; left encoder A=22 B=21 push=23;
-//                    buttons 4/5; triggers TR1..4 = 0..3; CV1..4 = A3..A6
-//                    bipolar (0V = midscale).
-// Select with -DHARDWARE_O_C (see platformio env teensy40_oc).
+//   O_C (default)  : genuine O_C board (14HP original / uO_c 8HP micro),
+//                    Teensy 4.0 drop-in. SH1106 OLED on SPI (CS=8 DC=6 RST=7);
+//                    DAC8565 quad on the same SPI (CS=10 RST=9), 0-10 V outputs;
+//                    left encoder A=22 B=21 push=23; top button = pin 5;
+//                    clock = TR1 (pin 0, active low); CV1/CV2 = A3/A4, bipolar.
+//   HARDWARE_DIY   : breadboard design from the README - I2C OLED on 18/19
+//                    (SSD1306 or SH1106, chosen at runtime in the SYS page),
+//                    MCP4822 DACs on software CS 7..10, 0-4.09 V.
+// Select the DIY profile with -DHARDWARE_DIY (see platformio env teensy40_diy).
 // ---------------------------------------------------------------------------
 
-#if defined(HARDWARE_O_C) && HARDWARE_O_C == 1
+#ifdef HARDWARE_DIY
+#define IS_O_C 0
+#else
+#define IS_O_C 1
+#endif
+
+#if IS_O_C
 
 #if NUM_OUTPUTS > 4
 #error "O_C hardware has a quad DAC: NUM_OUTPUTS must be 1..4"
@@ -83,15 +89,11 @@
 #define DISPLAY_RESET   -1
 #define PIN_I2C_SDA 18
 #define PIN_I2C_SCL 19
-// 1 = panel ACKs on I2C but stays blank with the SSD1306 driver: SH1106 module
-#ifndef DISPLAY_SH1106
-#define DISPLAY_SH1106 0
-#endif
 #define DISPLAY_KIND "I2C"
 
 #endif
 
-// MIDI clock input: Serial1 RX on pin 0 (Teensy 4.0/4.1), feed through a
+// MIDI clock input (DIY profile only): Serial1 RX on pin 0, feed through a
 // 6N138/6N139 optocoupler (or resistor divider) per the MIDI spec.
 #define MIDI_SERIAL        Serial1
 #define MIDI_CLOCK_PPQN    24

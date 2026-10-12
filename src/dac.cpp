@@ -1,7 +1,7 @@
 #include "dac.h"
 #include <SPI.h>
 
-#if defined(HARDWARE_O_C) && HARDWARE_O_C == 1
+#if IS_O_C
 // ---------------------------------------------------------------------------
 // Genuine O_C hardware: DAC8565 quad 16-bit DAC, shares the SPI bus with the
 // SH1106 OLED. Output stage inverts, so the firmware pre-inverts too

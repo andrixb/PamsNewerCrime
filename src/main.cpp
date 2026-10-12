@@ -18,12 +18,12 @@ static void ck_isr() {
 
 static void control_tick() {
   tick_count++;
+  ui_service();               // full 1 kHz: fast, reliable encoder reads
   if ((tick_count % 8) == 0) {
     uint16_t r1 = analogRead(PIN_CV_IN1);
     uint16_t r2 = analogRead(PIN_CV_IN2);
     cv1_f = cv1_f - (cv1_f >> 2) + (r1 >> 2);
     cv2_f = cv2_f - (cv2_f >> 2) + (r2 >> 2);
-    ui_service();
   }
   masterClock.tick();
   uint32_t delta = masterClock.take_delta();
