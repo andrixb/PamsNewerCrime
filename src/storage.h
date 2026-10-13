@@ -9,6 +9,7 @@ struct MasterPersist {
   uint8_t ext_ppqn;
   uint8_t running;
   uint8_t swing;
+  uint8_t default_ratio;
   uint16_t user_scales[USER_SCALE_COUNT];
 };
 

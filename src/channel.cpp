@@ -75,6 +75,7 @@ static const uint16_t SCALE_MASKS[] = {
 const uint8_t SCALE_COUNT = (sizeof(SCALE_MASKS) / sizeof(SCALE_MASKS[0])) + USER_SCALE_COUNT;
 
 uint16_t USER_SCALES[USER_SCALE_COUNT] = { 0xFFF, 0xAB5, 0x5AD };
+uint8_t DEFAULT_RATIO = 6;   // channels_init() default (kept from the old hard-coded ratio)
 
 // Resolve a scale index (built-in tables, then the 3 editable user slots) to a
 // 12-bit semitone mask.
@@ -146,7 +147,7 @@ void channels_init() {
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     Channel &c = channels[i];
     memset(&c.p, 0, sizeof(c.p));
-    c.p.ratio = 6;
+    c.p.ratio = DEFAULT_RATIO < RATIO_COUNT ? DEFAULT_RATIO : 6;
     c.p.mode = MODE_PULSE;
     c.p.width = 64;
     c.p.skew = 128;

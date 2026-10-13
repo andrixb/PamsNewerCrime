@@ -104,7 +104,7 @@ static const char *FLEX_NAMES[] = { "off", "human", "swing", "accel", "hump", "f
 static const char *SRC_NAMES[2] = { "int", "ext" };
 #define SRC_COUNT 2
 
-static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A", "load bank B", "defaults", "edit scale 1", "edit scale 2", "edit scale 3" };
+static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A", "load bank B", "defaults", "set def ratio", "edit scale 1", "edit scale 2", "edit scale 3" };
 #define SYS_ACTION_COUNT (sizeof(SYS_ACTIONS) / sizeof(SYS_ACTIONS[0]))
 
 #define P_RATIO 0
@@ -378,6 +378,13 @@ static uint8_t app_sel = 0;
 static bool scale_edit = false;
 static uint8_t scale_slot = 0;   // USER_SCALES index
 static uint8_t scale_note = 0;   // 0..11 cursor
+
+// Default-ratio editor: entered from the SYS page. Either encoder scrolls the
+// ratio list, either encoder press commits DEFAULT_RATIO + exits, a panel
+// button cancels. channels_init() (the "defaults" action) gives this ratio
+// to every channel.
+static bool ratio_edit = false;
+static uint8_t ratio_sel = 0;
 
 static uint8_t ch_of_page() { return page - 1; }
 static bool is_master() { return page == 0; }
@@ -679,8 +686,12 @@ static void do_action(uint8_t idx) {
       masterClock.running = true;
       channels_init();
       break;
-    case 5: case 6: case 7:
-      scale_slot = idx - 5;
+    case 5:
+      ratio_sel = DEFAULT_RATIO;
+      ratio_edit = true;
+      return;   // commit happens on exit
+    case 6: case 7: case 8:
+      scale_slot = idx - 6;
       scale_note = 0;
       scale_edit = true;
       return;   // no mark_dirty; edit commits on exit
@@ -788,6 +799,23 @@ void ui_service() {
     return;
   }
 
+  if (ratio_edit) {
+    // Either encoder scrolls the ratio (wrapping).
+    int8_t d = enc_l.read();
+    d += (int8_t)-enc_r.read();
+    while (d > 0) { ratio_sel = (uint8_t)((ratio_sel + 1) % RATIO_COUNT); d--; }
+    while (d < 0) { ratio_sel = (uint8_t)((ratio_sel + RATIO_COUNT - 1) % RATIO_COUNT); d++; }
+    // Either encoder push commits; either panel button cancels.
+    if (btn_enc_sw.released() || btn_enc_r_sw.released()) {
+      DEFAULT_RATIO = ratio_sel;
+      ratio_edit = false;
+      mark_dirty();
+    } else if (btn_b2.released() || btn_b1.released()) {
+      ratio_edit = false;
+    }
+    return;
+  }
+
   if (app_menu) {
     // Either encoder scrolls the mode list (wrapping).
     int8_t d = enc_l.read();
@@ -872,6 +900,28 @@ void ui_draw() {
     }
     gfx->setCursor(2, 50);
     gfx->printf("L:note R:toggle push:done");
+    oled_flush();
+    return;
+  }
+
+  if (ratio_edit) {
+    // 6-row scrolling window over the ratio table; "*" marks the stored default.
+    gfx->setCursor(0, 0);
+    gfx->printf("DEFAULT RATIO");
+    const int16_t y0 = 12, dy = 8, rows = 6;
+    int16_t top = 0;
+    if (ratio_sel + 1 >= rows)
+      top = (ratio_sel >= RATIO_COUNT - 1) ? (RATIO_COUNT - rows) : (ratio_sel - rows + 1);
+    for (int16_t r = 0; r < rows; r++) {
+      int16_t m = top + r;
+      if (m >= RATIO_COUNT) break;
+      int16_t y = y0 + r * dy;
+      if (m == ratio_sel) { gfx->fillRect(0, y, 128, 8, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
+      gfx->setCursor(2, y);
+      gfx->printf("%s", RATIO_TABLE[m].label);
+      if (m == DEFAULT_RATIO) { gfx->setCursor(96, y); gfx->printf("*"); }
+      if (m == ratio_sel) gfx->setTextColor(PNC_WHITE);
+    }
     oled_flush();
     return;
   }

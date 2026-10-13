@@ -75,6 +75,10 @@ extern const uint8_t SCALE_COUNT;
 extern uint16_t USER_SCALES[USER_SCALE_COUNT];
 uint16_t scale_mask(uint8_t idx);
 
+// Default ratio applied to every channel by channels_init() (the "defaults"
+// SYS action). Set from the SYS page, persisted with the patch.
+extern uint8_t DEFAULT_RATIO;
+
 enum CvParam : uint8_t {
   CVP_NONE = 0,
   CVP_RANGE,
