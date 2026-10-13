@@ -9,7 +9,9 @@ CXX      ?= g++
 TEST_BIN := build/test_pnc
 TEST_SRC := test/test_main.cpp test/mock_hw.cpp \
             src/domain/euclid.cpp src/domain/scales.cpp \
-            src/app/clock.cpp src/app/channel.cpp src/app/storage.cpp
+            src/app/clock.cpp src/app/channel.cpp \
+            src/app/serialization.cpp src/app/patch.cpp \
+            src/infra/hal_storage.cpp
 TESTFLAGS := -std=gnu++17 -Wall -Wextra -Wno-unused-function \
              -Itest/mock -Isrc -DNUM_OUTPUTS=4
 

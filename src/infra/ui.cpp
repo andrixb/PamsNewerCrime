@@ -1,6 +1,6 @@
 #include "infra/ui.h"
 #include "app/clock.h"
-#include "app/storage.h"
+#include "app/patch.h"
 #include <Adafruit_GFX.h>
 #include <string.h>
 
@@ -697,18 +697,13 @@ static void fmt_val(uint8_t ch, uint8_t idx, char *buf, size_t n) {
 }
 
 static void do_action(uint8_t idx) {
-  StoreBlob blob;
   switch (idx) {
-    case 0: capture_state(blob); storage_save(SLOT_BANK1, blob); break;
-    case 1: capture_state(blob); storage_save(SLOT_BANK2, blob); break;
-    case 2: if (storage_load(SLOT_BANK1, blob)) restore_state(blob); break;
-    case 3: if (storage_load(SLOT_BANK2, blob)) restore_state(blob); break;
+    case 0: patch_save(SLOT_BANK1); break;
+    case 1: patch_save(SLOT_BANK2); break;
+    case 2: patch_load(SLOT_BANK1); break;
+    case 3: patch_load(SLOT_BANK2); break;
     case 4:
-      masterClock.bpm_cent = 12000;
-      masterClock.source = 0;
-      masterClock.ext_ppqn = 24;
-      masterClock.running = true;
-      channels_init(DEFAULT_RATIO);
+      patch_defaults();
       break;
     case 5:
       ratio_sel = DEFAULT_RATIO;

@@ -9,7 +9,8 @@ infrastructure) with one-way dependencies, without changing runtime behavior.
 - [x] Phase 1 — directory split (`src/domain|app|infra`, src-rooted includes, `make test` + `build40` + `build41` green)
 - [x] Phase 2 — decouple the engine (no `dac.h` in app; drained outputs;
   explicit `EngineEnv`/`default_ratio`; `make test` + `build40` + `build41` green)
-- [ ] Phase 3 — storage split
+- [x] Phase 3 — storage split (serialization + storage port + patch use cases;
+  `make test` + `build40` + `build41` green)
 - [ ] Phase 4 — split ui.cpp
 - [ ] Phase 5 — composition root + verification
 

@@ -2,14 +2,13 @@
 #include "pam_config.h"
 #include "app/clock.h"
 #include "app/channel.h"
-#include "app/storage.h"
+#include "app/patch.h"
 #include "infra/ui.h"
 #include "infra/dac.h"
 
 static IntervalTimer ctrl_timer;
 static volatile uint32_t tick_count = 0;
 static uint16_t cv1_f = 2048, cv2_f = 2048;
-static uint32_t last_save_ms = 0;
 static uint32_t last_ui_ms = 0;
 
 static void ck_isr() {
@@ -42,21 +41,11 @@ static void control_tick() {
     if (dirty & (uint8_t)(1u << i)) dac_write(i, outs[i]);
 }
 
-static void autosave() {
-  uint32_t now = millis();
-  if (state_dirty() && now - last_save_ms > 3000) {
-    last_save_ms = now;
-    StoreBlob blob;
-    capture_state(blob);
-    storage_save(SLOT_ACTIVE, blob);
-  }
-}
-
 void setup() {
   Serial.begin(115200);
   analogReadResolution(12);
   dac_init();
-  storage_init();
+  patch_init();
   ui_init();
   masterClock.begin();
 #if TR_ACTIVE_LOW
@@ -111,6 +100,6 @@ void loop() {
   if (now - last_ui_ms > 33) {
     last_ui_ms = now;
     ui_draw();
-    autosave();
+    patch_autosave_tick(now);
   }
 }

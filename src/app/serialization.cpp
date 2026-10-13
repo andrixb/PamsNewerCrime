@@ -1,14 +1,11 @@
-#include "app/storage.h"
+#include "app/serialization.h"
 #include "app/clock.h"
-#include <EEPROM.h>
 #include <string.h>
 
 #define STORE_MAGIC   0x504B5731u
 #define STORE_VERSION 10u
 
-static const uint32_t SLOT_STRIDE = 512;
-static const uint32_t SLOT_OFFSET[3] = { 0, SLOT_STRIDE, 2 * SLOT_STRIDE };
-static_assert(sizeof(StoreBlob) <= SLOT_STRIDE, "blob too big");
+static_assert(sizeof(StoreBlob) <= STORE_SLOT_STRIDE, "blob too big");
 
 static uint32_t crc32(const uint8_t *data, size_t len) {
   uint32_t crc = 0xFFFFFFFF;
@@ -21,10 +18,6 @@ static uint32_t crc32(const uint8_t *data, size_t len) {
 }
 
 static const size_t PAYLOAD_LEN = sizeof(MasterPersist) + sizeof(ChannelParams) * NUM_OUTPUTS;
-
-static bool dirty = false;
-bool state_dirty() { return dirty; }
-void mark_dirty() { dirty = true; }
 
 void capture_state(StoreBlob &blob) {
   memset(&blob, 0, sizeof(blob));
@@ -57,18 +50,7 @@ void restore_state(const StoreBlob &blob) {
   channels_reset();
 }
 
-bool storage_load(StoreSlot slot, StoreBlob &blob) {
-  EEPROM.get(SLOT_OFFSET[slot], blob);
+bool blob_verify(const StoreBlob &blob) {
   if (blob.magic != STORE_MAGIC || blob.version != STORE_VERSION) return false;
   return crc32((const uint8_t *)&blob.master, PAYLOAD_LEN) == blob.crc;
-}
-
-void storage_save(StoreSlot slot, const StoreBlob &blob) {
-  EEPROM.put(SLOT_OFFSET[slot], blob);
-}
-
-void storage_init() {
-  StoreBlob blob;
-  channels_init(DEFAULT_RATIO);
-  if (storage_load(SLOT_ACTIVE, blob)) restore_state(blob);
 }

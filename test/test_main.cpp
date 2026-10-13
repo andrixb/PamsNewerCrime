@@ -1,10 +1,11 @@
 // Native unit tests for Pam's Newer Crime.
 //
 // Builds the REAL production translation units (domain/euclid.cpp,
-// domain/scales.cpp, app/clock.cpp, app/channel.cpp, app/storage.cpp) on the
-// host against small Arduino/EEPROM/DAC mocks, and exercises their public
-// behaviour. No production code is duplicated here: every assertion runs
-// through the shipped engine.
+// domain/scales.cpp, app/clock.cpp, app/channel.cpp, app/serialization.cpp,
+// app/patch.cpp, infra/hal_storage.cpp) on the host against small
+// Arduino/EEPROM/DAC mocks, and exercises their public behaviour. No
+// production code is duplicated here: every assertion runs through the
+// shipped engine.
 //
 //   make test
 //
@@ -18,7 +19,9 @@
 #include "app/channel.h"
 #include "app/clock.h"
 #include "domain/euclid.h"
-#include "app/storage.h"
+#include "app/serialization.h"
+#include "app/patch.h"
+#include "app/storage_port.h"   // raw slot write for the version-rejection test
 #include "infra/dac.h"   // declarations only; definitions come from test/mock_hw.cpp
 
 extern uint32_t mock_time_us;
@@ -464,7 +467,7 @@ static void test_channel_woggle() {
 // storage
 // ---------------------------------------------------------------------------
 static void test_storage() {
-  storage_init();
+  patch_init();
 
   masterClock.bpm_cent = 13456;
   masterClock.swing = 20;
@@ -474,9 +477,7 @@ static void test_storage() {
   channels[0].p.steps[5] = 77;
   channels[0].p.div_a = -8;
 
-  StoreBlob blob;
-  capture_state(blob);
-  storage_save(SLOT_BANK1, blob);
+  patch_save(SLOT_BANK1);
 
   masterClock.bpm_cent = 9999;
   masterClock.swing = 0;
@@ -486,9 +487,9 @@ static void test_storage() {
   channels[0].p.steps[5] = 0;
   channels[0].p.div_a = 0;
 
-  StoreBlob loaded;
-  CHECK(storage_load(SLOT_BANK1, loaded));
-  restore_state(loaded);
+  CHECK(patch_load(SLOT_BANK1));
+  StoreBlob reloaded;
+  capture_state(reloaded);
   CHECK(masterClock.bpm_cent == 13456);
   CHECK(masterClock.swing == 20);
   CHECK(USER_SCALES[1] == 0x123);
@@ -497,16 +498,23 @@ static void test_storage() {
   CHECK(channels[0].p.steps[5] == 77);
   CHECK(channels[0].p.div_a == -8);
 
+  // In-memory verification rejects tampering.
+  CHECK(blob_verify(reloaded));
+  reloaded.crc ^= 0xAA;
+  CHECK(!blob_verify(reloaded));
+
   // Corrupted payload must be rejected by CRC. (SLOT_BANK1 lives at byte 512.)
   EEPROM.data[512 + 40] ^= 0xAA;
-  CHECK(!storage_load(SLOT_BANK1, loaded));
+  CHECK(!patch_load(SLOT_BANK1));
   EEPROM.data[512 + 40] ^= 0xAA;   // restore
-  CHECK(storage_load(SLOT_BANK1, loaded));
+  CHECK(patch_load(SLOT_BANK1));
 
-  // A future version must be rejected outright.
-  blob.version += 1;
-  storage_save(SLOT_BANK2, blob);
-  CHECK(!storage_load(SLOT_BANK2, loaded));
+  // A future version must be rejected outright (written raw, bypassing capture).
+  StoreBlob future;
+  capture_state(future);
+  future.version += 1;
+  storage_port_write(store_slot_offset(SLOT_BANK2), &future, sizeof(future));
+  CHECK(!patch_load(SLOT_BANK2));
 
   suite_ok("storage");
 }
@@ -822,7 +830,7 @@ static void test_blob_golden() {
 }
 
 static void test_storage_roundtrip() {
-  storage_init();
+  patch_init();
   // Known pattern across every persisted field.
   masterClock.bpm_cent = 14100; masterClock.source = 1; masterClock.ext_ppqn = 12;
   masterClock.running = false; masterClock.swing = 33;
@@ -837,16 +845,14 @@ static void test_storage_roundtrip() {
   }
   StoreBlob b1;
   capture_state(b1);
-  storage_save(SLOT_ACTIVE, b1);
+  patch_save(SLOT_ACTIVE);
   // Wipe everything, then restore.
   masterClock.bpm_cent = 1; masterClock.source = 0; masterClock.ext_ppqn = 24;
   masterClock.running = true; masterClock.swing = 0;
   DEFAULT_RATIO = 6;
   USER_SCALES[0] = 0; USER_SCALES[1] = 0; USER_SCALES[2] = 0;
   channels_init(DEFAULT_RATIO);
-  StoreBlob loaded;
-  CHECK(storage_load(SLOT_ACTIVE, loaded));
-  restore_state(loaded);
+  CHECK(patch_load(SLOT_ACTIVE));
   StoreBlob b2;
   capture_state(b2);
   CHECK(memcmp(&b1, &b2, sizeof(StoreBlob)) == 0);
