@@ -139,6 +139,8 @@ static void apply_cv(ChannelParams &p, uint8_t src, int8_t scale, int val) {
     case CVP_ATK:   p.env_a  = constrain(p.env_a + (m >> 4), 0, 255); break;
     case CVP_DEC:   p.env_d  = constrain(p.env_d + (m >> 4), 0, 255); break;
     case CVP_SLEW:  p.slew   = constrain(p.slew + (m >> 4), 0, 255); break;
+    case CVP_SMOOTH: p.smooth = constrain(p.smooth + (m >> 4), 0, 255); break;
+    case CVP_BURST:  p.burst  = constrain(p.burst + (m >> 4), 0, 255); break;
     default: break;
   }
 }
@@ -151,6 +153,8 @@ void channels_init() {
     c.p.mode = MODE_PULSE;
     c.p.width = 64;
     c.p.skew = 128;
+    c.p.smooth = 96;
+    c.p.burst = 64;
     c.p.cv_min = 0;
     c.p.cv_max = 3000;
     c.p.prob = 100;
@@ -174,7 +178,8 @@ void channels_reset() {
 
     c.env_t = 0;
     c.wv = 128;
-    c.dir = 1;
+    c.wtar = 128;
+    c.wsm = 128;
     c.last_note = 0;
     c.out_mv = 0;
     c.filt_mv = 0;
@@ -449,17 +454,29 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
         break;
       }
       case MODE_WGGLE: {
-        uint8_t r = rand8();
-        if (fire || r < p.skew) {
-          c.wv = rand8();
-          c.dir = (rand8() & 1) ? 1 : -1;
+        // Make Noise Wogglebug model, clocked by the event grid:
+        //   skew   = chaos: probability a new stepped value is taken per event
+        //   smooth = lag processor feeding the smooth circuit (0 = jittery
+        //            steps, 255 = slowest glide)
+        //   width  = woggle chase: how fast the output catches the smooth value
+        //   burst  = probability of a random clock-synced trigger gate per event
+        if (fire) {
+          if (rand8() < p.skew) c.wtar = rand8();
+          c.gate_state = rand8() < p.burst;
         } else {
-          c.wv += c.dir * ((int16_t)(p.width >> 4) + 1);
-          if (c.wv > 255) { c.wv = 255; c.dir = -1; }
-          if (c.wv < 0)   { c.wv = 0;   c.dir = 1; }
+          c.gate_state = 0;
         }
+        int16_t sstep = (int16_t)(256 / (p.smooth + 1));
+        int16_t sd = (int16_t)c.wtar - (int16_t)c.wsm;
+        if (sd > sstep)       c.wsm += sstep;
+        else if (sd < -sstep) c.wsm -= sstep;
+        else                  c.wsm = c.wtar;
+        int16_t cstep = (int16_t)(p.width >> 4) + 1;
+        int16_t cd = (int16_t)c.wsm - c.wv;
+        if (cd > cstep)       c.wv += cstep;
+        else if (cd < -cstep) c.wv -= cstep;
+        else                  c.wv = c.wsm;
         frac = (uint16_t)(c.wv + 1) * 8;
-        c.gate_state = c.dir > 0;
         break;
       }
       case MODE_RWALK: {

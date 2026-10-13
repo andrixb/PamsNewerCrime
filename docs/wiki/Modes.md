@@ -88,10 +88,14 @@ note change.
 
 ## woggle — chaos wave
 
-- **Shape params:** `skew` (chaos — chance to jump randomly), `width` (speed).
-- A wogglebug-style wandering voltage: integrates in a direction until it hits a
-  rail or takes a random jump; jumps are more likely on firing events.
-- Gate flag = the current walk direction.
+- **Shape params:** `skew` (chaos — chance a new stepped value is taken per
+  event), `smooth` (lag feeding the smooth circuit: 0 = hard steps, 255 = slow
+  glide), `width` (woggle chase — how fast the output catches the smooth value),
+  `burst` (chance of a random clock-synced trigger gate per event).
+- A Wogglebug-style engine: the stepped random voltage re-rolls on firing
+  events (per `skew`), gets smoothed by a lag processor, and the output chases
+  it at `width` speed, always a step behind — quiver and glide.
+- Gate flag = the burst output (random gates synced to the clock).
 
 ## rwalk — random walk
 
