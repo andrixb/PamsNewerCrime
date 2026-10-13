@@ -66,6 +66,12 @@
 
 #define DISPLAY_KIND "OC-SPI SH1106"
 
+// Boot splash: play the "Pam's Newer Crime" chase animation (~3 s) on the OLED
+// at power-on, before the control timer starts. Build with -DPNC_SPLASH=0 to skip.
+#ifndef PNC_SPLASH
+#define PNC_SPLASH 1
+#endif
+
 // Opt-in CV output bring-up test: build with -DPNC_DAC_SELFTEST=1 to sweep each
 // output 0->5->10->0 V at boot (before the engine takes the bus) and log the
 // exact SPI bytes. Off by default; normal firmware is unchanged.
