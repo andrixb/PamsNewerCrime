@@ -502,6 +502,339 @@ static void test_storage() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 0 safety net: representative engine modes the refactor must not change.
+// (Appended after the pre-existing suites so their RNG sequence is untouched.)
+// ---------------------------------------------------------------------------
+static void test_channel_off() {
+  channels_init();
+  Channel &c = channels[0];
+  c.p.mode = MODE_OFF;
+  drive(300);
+  CHECK(c.gate_state == 0);
+  CHECK(c.out_mv == 0);
+  CHECK(mock_dac_mv[0] == 0);
+  suite_ok("channel: off");
+}
+
+static void test_channel_ramp() {
+  channels_init();
+  Channel &c = channels[0];
+  c.p.mode = MODE_RAMP; c.p.ratio = 16; c.p.skew = 128;
+  c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+  int on = 0, lo = 99999, hi = -1;
+  for (uint32_t t = 0; t < 256; t++) {
+    drive(1);
+    if (c.gate_state) on++;
+    if ((int)c.out_mv < lo) lo = c.out_mv;
+    if ((int)c.out_mv > hi) hi = c.out_mv;
+  }
+  CHECK(on == 128);            // gate = rising half (ph < skew)
+  CHECK(lo < 100);
+  CHECK(hi > 4800 && hi <= 5000);
+  suite_ok("channel: ramp");
+}
+
+static void test_channel_step_seq() {
+  channels_init();
+  Channel &c = channels[0];
+  c.p.mode = MODE_STEP; c.p.ratio = 16; c.p.step_len = 4;
+  c.p.steps[0] = 0; c.p.steps[1] = 85; c.p.steps[2] = 170; c.p.steps[3] = 255;
+  c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+  const uint8_t expect[4] = { 85, 170, 255, 0 };
+  for (int k = 0; k < 4; k++) {
+    drive(256);                          // one 1/4 event per 256 ticks
+    CHECK(c.sh_val == expect[k]);
+  }
+  CHECK(c.out_mv == 0);                  // last step holds 0
+  suite_ok("channel: step sequence");
+}
+
+static void test_channel_sh() {
+  channels_init();
+  Channel &c = channels[0];
+  c.p.mode = MODE_SH; c.p.ratio = 16;
+  c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+  int gates = 0;
+  for (uint32_t t = 0; t < 512; t++) {
+    drive(1);
+    if (c.gate_state) gates++;
+    CHECK(c.out_mv <= 5000);
+  }
+  CHECK(gates == 2);                     // gate only on event ticks
+  CHECK(mock_dac_mv[0] == c.out_mv);
+  suite_ok("channel: S&H");
+}
+
+static void test_channel_env() {
+  channels_init();
+  Channel &c = channels[0];
+  c.p.mode = MODE_ENV; c.p.ratio = 16; c.p.env_a = 2; c.p.env_d = 2;  // 64+64 ticks
+  c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+  drive(256);                            // first event fires the envelope
+  CHECK(c.event_count == 1);
+  CHECK(c.gate_state == 1);
+  CHECK(c.out_mv > 0 && c.out_mv < 5000);   // attack in progress
+  int peak = 0, gated = 0;
+  for (uint32_t t = 0; t < 200; t++) {
+    drive(1);
+    if (c.gate_state) gated++;
+    if ((int)c.out_mv > peak) peak = c.out_mv;
+  }
+  CHECK(peak > 4000);                    // full excursion
+  CHECK(gated == 127);                   // open for the rest of the 128-tick window
+  CHECK(c.gate_state == 0 && c.out_mv == 0);
+  suite_ok("channel: envelope");
+}
+
+static void test_channel_logic() {
+  // AND against a silent partner never opens.
+  channels_init();
+  channels[0].p.mode = MODE_OFF;
+  Channel &b = channels[1];
+  b.p.mode = MODE_LOGIC; b.p.ratio = 16; b.p.width = 64; b.p.logic_src = 1;
+  b.p.logic_op = LOGIC_AND; b.p.slew = 0; b.p.prob = 100; b.p.eucl_en = 0;
+  b.p.cv_min = 0; b.p.cv_max = 5000;
+  int on_and = 0;
+  for (uint32_t t = 0; t < 512; t++) { drive(1); if (b.gate_state) on_and++; }
+  CHECK(on_and == 0);
+  // OR against a silent partner equals the own window (64 ticks/cycle).
+  channels_init();
+  channels[0].p.mode = MODE_OFF;
+  Channel &o = channels[1];
+  o.p.mode = MODE_LOGIC; o.p.ratio = 16; o.p.width = 64; o.p.logic_src = 1;
+  o.p.logic_op = LOGIC_OR; o.p.slew = 0; o.p.prob = 100; o.p.eucl_en = 0;
+  o.p.cv_min = 0; o.p.cv_max = 5000;
+  int on_or = 0;
+  for (uint32_t t = 0; t < 512; t++) { drive(1); if (o.gate_state) on_or++; }
+  CHECK(on_or == 128);
+  suite_ok("channel: logic");
+}
+
+static void test_channel_rwalk() {
+  channels_init();
+  Channel &c = channels[0];
+  c.p.mode = MODE_RWALK; c.p.ratio = 16; c.p.width = 0;   // step of 1
+  c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+  int gates = 0;
+  bool moved = false;
+  int16_t prev_wv = c.wv;
+  for (uint32_t t = 0; t < 512; t++) {
+    drive(1);
+    if (c.gate_state) gates++;
+    if (c.wv != prev_wv) moved = true;
+    prev_wv = c.wv;
+    CHECK(c.wv >= 0 && c.wv <= 255);
+    CHECK(c.out_mv <= 5000);
+  }
+  CHECK(gates == 2);                     // gate only on event ticks
+  CHECK(moved);                          // walk actually walks
+  suite_ok("channel: random walk");
+}
+
+static void test_channel_slew() {
+  channels_init();
+  Channel &c = channels[0];
+  c.p.mode = MODE_LFO; c.p.ratio = 16; c.p.wave = LFO_SQR; c.p.skew = 128;
+  c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0;
+  drive(1);
+  CHECK(c.out_mv == 5000);               // square opens high instantly
+  channels_init();
+  Channel &s = channels[0];
+  s.p.mode = MODE_LFO; s.p.ratio = 16; s.p.wave = LFO_SQR; s.p.skew = 128;
+  s.p.cv_min = 0; s.p.cv_max = 5000; s.p.slew = 16;
+  drive(1);
+  CHECK(s.out_mv == 312);                // one lag step: 5000*16/256
+  suite_ok("channel: slew limiter");
+}
+
+static void test_channel_gquant() {
+  channels_init();
+  Channel &c = channels[0];
+  c.p.mode = MODE_RAMP; c.p.ratio = 16; c.p.skew = 128;
+  c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+  c.p.scale = 1; c.p.gquant = 1;         // major, post-filter on
+  static const bool in_major[12] = {1,0,1,0,1,1,0,1,0,1,0,1};
+  bool off_grid = false;
+  for (uint32_t t = 0; t < 256; t++) {
+    drive(1);
+    int semi = c.out_mv / 83;
+    if (c.out_mv % 83 != 0) off_grid = true;
+    else if (semi < 0 || semi > 30 || !in_major[semi % 12]) off_grid = true;
+  }
+  CHECK(!off_grid);
+  suite_ok("channel: global quantise");
+}
+
+static void test_channel_cvmod() {
+  auto run = [](uint8_t cv) {
+    channels_init();
+    Channel &c = channels[0];
+    c.p.mode = MODE_PULSE; c.p.ratio = 16; c.p.width = 64;
+    c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+    c.p.cv_src1 = CVP_WIDTH; c.p.cv_scale1 = 4; c.p.cv_in1 = 0;  // CV1 -> width
+    int on = 0;
+    for (uint32_t t = 0; t < 512; t++) {
+      channels_update(96, cv, 0);
+      if (t >= 256 && c.gate_state) on++;
+    }
+    return on;
+  };
+  CHECK(run(0) == 64);                   // unmodulated 25% duty
+  CHECK(run(255) == 95);                 // full-scale CV widens the gate
+  suite_ok("channel: CV modulation");
+}
+
+static void test_channel_flex() {
+  // Straight-grid baseline: 4 events, 64 ticks/cycle over 1024 ticks.
+  channels_init();
+  Channel &c = channels[0];
+  c.p.mode = MODE_PULSE; c.p.ratio = 16; c.p.width = 64;
+  c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+  c.p.flex = FLEX_NONE; c.p.flex_amt = 0;
+  int base_on = 0;
+  for (uint32_t t = 0; t < 1024; t++) { drive(1); if (c.gate_state) base_on++; }
+  CHECK(c.event_count == 4);
+  CHECK(base_on == 256);
+  // Every flex op keeps the engine bounded and gating (no crash, no stuck rail).
+  for (uint8_t f = FLEX_HUMAN; f < FLEX_LAST; f++) {
+    channels_init();
+    Channel &x = channels[0];
+    x.p.mode = MODE_PULSE; x.p.ratio = 16; x.p.width = 64;
+    x.p.cv_min = 0; x.p.cv_max = 5000; x.p.slew = 0; x.p.prob = 100; x.p.eucl_en = 0;
+    x.p.flex = f; x.p.flex_amt = 128;
+    int on = 0, rises = 0;
+    uint8_t prev = 0;
+    uint16_t peak = 0;
+    for (uint32_t t = 0; t < 1024; t++) {
+      drive(1);
+      if (x.gate_state) on++;
+      if (x.gate_state && !prev) rises++;
+      if (x.out_mv > peak) peak = x.out_mv;
+      prev = x.gate_state;
+    }
+    CHECK(x.event_count >= 3 && x.event_count <= 8);
+    CHECK(rises >= 2);
+    CHECK(on > 0 && on <= 1024);
+    CHECK(peak <= 5000);
+  }
+  // The rate warp provably bends time (accel stretches the open window).
+  channels_init();
+  Channel &a = channels[0];
+  a.p.mode = MODE_PULSE; a.p.ratio = 16; a.p.width = 64;
+  a.p.cv_min = 0; a.p.cv_max = 5000; a.p.slew = 0; a.p.prob = 100; a.p.eucl_en = 0;
+  a.p.flex = FLEX_ACCEL; a.p.flex_amt = 128;
+  int acc_on = 0;
+  for (uint32_t t = 0; t < 1024; t++) { drive(1); if (a.gate_state) acc_on++; }
+  CHECK(acc_on != base_on);
+  suite_ok("channel: flex micro-timing");
+}
+
+static void test_clock_tempo() {
+  const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+  masterClock = MasterClock{};
+  masterClock.bpm_cent = 6000;           // 60 BPM -> quarter == 1000 ticks
+  masterClock.source = 0; masterClock.running = true; masterClock.swing = 0;
+  masterClock.reset_phase();
+  uint32_t tot = 0;
+  run_clock(1000, &tot);
+  CHECK(tot == QT);
+  // BPM clamps pin the constrain() contract the engine relies on.
+  masterClock = MasterClock{}; masterClock.bpm_cent = 0;   // clamps to BPM_MIN
+  masterClock.source = 0; masterClock.running = true; masterClock.swing = 0;
+  masterClock.reset_phase();
+  tot = 0;
+  run_clock(6000, &tot);
+  CHECK(tot == QT);
+  masterClock = MasterClock{}; masterClock.bpm_cent = 60000;  // clamps to BPM_MAX
+  masterClock.source = 0; masterClock.running = true; masterClock.swing = 0;
+  masterClock.reset_phase();
+  tot = 0;
+  int n = 0;
+  while (tot < QT && n < 1000) { masterClock.tick(); tot += masterClock.take_delta(); n++; }
+  CHECK(n == 182);
+  // take_delta drains the accumulator.
+  masterClock.tick();
+  (void)masterClock.take_delta();
+  CHECK(masterClock.take_delta() == 0);
+  suite_ok("clock: tempo/clamp");
+}
+
+static void test_blob_golden() {
+  // Byte-identical default patch: any layout/format change must break this.
+  masterClock = MasterClock{};
+  DEFAULT_RATIO = 6;
+  USER_SCALES[0] = 0xFFF; USER_SCALES[1] = 0xAB5; USER_SCALES[2] = 0x5AD;
+  channels_init();
+  StoreBlob b;
+  capture_state(b);
+  CHECK(b.magic == 0x504B5731u);
+  CHECK(b.version == 10u);
+  CHECK(sizeof(StoreBlob) == 332u);
+  CHECK(sizeof(StoreBlob) <= 512u);      // EEPROM slot stride
+  CHECK(RATIO_COUNT == 24);
+  CHECK(SCALE_COUNT == 32);
+  CHECK(b.master.bpm_cent == 12000);
+  CHECK(b.master.source == 0 && b.master.ext_ppqn == 24 && b.master.running == 1);
+  CHECK(b.master.swing == 0 && b.master.default_ratio == 6);
+  CHECK(b.master.user_scales[0] == 0xFFF && b.master.user_scales[1] == 0xAB5 &&
+        b.master.user_scales[2] == 0x5AD);
+  CHECK(b.ch[0].mode == MODE_PULSE && b.ch[0].ratio == 6 && b.ch[0].width == 64);
+  CHECK(b.ch[0].cv_min == 0 && b.ch[0].cv_max == 3000 && b.ch[0].prob == 100);
+  CHECK(b.crc == 0xeee026d8u);
+  StoreBlob b2;
+  capture_state(b2);
+  CHECK(memcmp(&b, &b2, sizeof(b)) == 0);
+  suite_ok("storage: blob golden");
+}
+
+static void test_storage_roundtrip() {
+  storage_init();
+  // Known pattern across every persisted field.
+  masterClock.bpm_cent = 14100; masterClock.source = 1; masterClock.ext_ppqn = 12;
+  masterClock.running = false; masterClock.swing = 33;
+  DEFAULT_RATIO = 10;
+  USER_SCALES[0] = 0x111; USER_SCALES[1] = 0x222; USER_SCALES[2] = 0x333;
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
+    channels[i].p.mode = (uint8_t)((i + 1) % MODE_LAST);
+    channels[i].p.ratio = i;
+    channels[i].p.width = (uint8_t)(10 + i);
+    channels[i].p.steps[i % MAX_STEPS] = (uint8_t)(50 + i);
+    channels[i].p.div_a = (int8_t)((int)i - 2);
+  }
+  StoreBlob b1;
+  capture_state(b1);
+  storage_save(SLOT_ACTIVE, b1);
+  // Wipe everything, then restore.
+  masterClock.bpm_cent = 1; masterClock.source = 0; masterClock.ext_ppqn = 24;
+  masterClock.running = true; masterClock.swing = 0;
+  DEFAULT_RATIO = 6;
+  USER_SCALES[0] = 0; USER_SCALES[1] = 0; USER_SCALES[2] = 0;
+  channels_init();
+  StoreBlob loaded;
+  CHECK(storage_load(SLOT_ACTIVE, loaded));
+  restore_state(loaded);
+  StoreBlob b2;
+  capture_state(b2);
+  CHECK(memcmp(&b1, &b2, sizeof(StoreBlob)) == 0);
+  CHECK(masterClock.bpm_cent == 14100 && masterClock.source == 1);
+  CHECK(masterClock.ext_ppqn == 12 && !masterClock.running && masterClock.swing == 33);
+  CHECK(DEFAULT_RATIO == 10);
+  CHECK(USER_SCALES[0] == 0x111 && USER_SCALES[2] == 0x333);
+  CHECK(channels[2].p.width == 12 && channels[2].p.steps[2 % MAX_STEPS] == 52);
+  // Dirty flag pins the autosave contract used by main.cpp.
+  mark_dirty();
+  CHECK(state_dirty());
+  // restore_state defends against dirty on-device values.
+  StoreBlob odd = b1;
+  odd.master.swing = 100; odd.master.default_ratio = 255;
+  uint8_t keep_ratio = DEFAULT_RATIO;
+  restore_state(odd);
+  CHECK(masterClock.swing == 63);
+  CHECK(DEFAULT_RATIO == keep_ratio);
+  suite_ok("storage: round-trip");
+}
+
+// ---------------------------------------------------------------------------
 int main() {
   test_euclid();
   test_clock();
@@ -516,6 +849,20 @@ int main() {
   test_channel_lfo();
   test_channel_woggle();
   test_storage();
+  test_channel_off();
+  test_channel_ramp();
+  test_channel_step_seq();
+  test_channel_sh();
+  test_channel_env();
+  test_channel_logic();
+  test_channel_rwalk();
+  test_channel_slew();
+  test_channel_gquant();
+  test_channel_cvmod();
+  test_channel_flex();
+  test_clock_tempo();
+  test_blob_golden();
+  test_storage_roundtrip();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }
