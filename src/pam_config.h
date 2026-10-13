@@ -72,6 +72,13 @@
 #define PNC_SPLASH 1
 #endif
 
+// Idle screensaver: after this many ms with no encoder/button activity the
+// OLED shows an abstract wave-interference animation; any input wakes it.
+// Set to 0 to disable.
+#ifndef PNC_SA_TIMEOUT_MS
+#define PNC_SA_TIMEOUT_MS 60000
+#endif
+
 // Opt-in CV output bring-up test: build with -DPNC_DAC_SELFTEST=1 to sweep each
 // output 0->5->10->0 V at boot (before the engine takes the bus) and log the
 // exact SPI bytes. Off by default; normal firmware is unchanged.
