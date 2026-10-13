@@ -11,7 +11,7 @@ infrastructure) with one-way dependencies, without changing runtime behavior.
   explicit `EngineEnv`/`default_ratio`; `make test` + `build40` + `build41` green)
 - [x] Phase 3 — storage split (serialization + storage port + patch use cases;
   `make test` + `build40` + `build41` green)
-- [ ] Phase 4 — split ui.cpp
+- [x] Phase 4 — split ui.cpp (menu_model + hal_input + display/*; `make test` + `build40` + `build41` green)
 - [ ] Phase 5 — composition root + verification
 
 ## Current state

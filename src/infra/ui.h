@@ -1,7 +1,8 @@
 #pragma once
+// Public UI facade: init, 1 kHz service, deferred SYS actions, 30 Hz draw and
+// page/channel queries. Implemented across infra/display/* (Phase 4).
+// main.cpp is the only includer.
 #include <Arduino.h>
-#include "pam_config.h"
-#include "app/channel.h"
 
 void ui_init();
 void ui_service();

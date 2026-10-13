@@ -4,11 +4,11 @@
 #include "app/channel.h"
 #include "app/patch.h"
 #include "infra/ui.h"
+#include "infra/hal_input.h"
 #include "infra/dac.h"
 
 static IntervalTimer ctrl_timer;
 static volatile uint32_t tick_count = 0;
-static uint16_t cv1_f = 2048, cv2_f = 2048;
 static uint32_t last_ui_ms = 0;
 
 static void ck_isr() {
@@ -18,23 +18,13 @@ static void ck_isr() {
 static void control_tick() {
   tick_count++;
   ui_service();               // 1 kHz: poll + apply encoders/buttons
-  if ((tick_count % 8) == 0) {
-    uint16_t r1 = analogRead(PIN_CV_IN1);
-    uint16_t r2 = analogRead(PIN_CV_IN2);
-#if PNC_CV_INVERT
-    // This board's CV input stage inverts (measured: 0V -> ~4095, 10V -> ~170).
-    r1 = 4095 - r1;
-    r2 = 4095 - r2;
-#endif
-    cv1_f = cv1_f - (cv1_f >> 2) + (r1 >> 2);
-    cv2_f = cv2_f - (cv2_f >> 2) + (r2 >> 2);
-  }
+  if ((tick_count % 8) == 0) hal_input_sample_cv();
   masterClock.tick();
   uint32_t delta = masterClock.take_delta();
   // App computes (no I/O); infra emits. The env carries the globals the
   // engine needs instead of it reading them itself.
   const EngineEnv env = { USER_SCALES };
-  channels_update(delta, cv1_f >> 4, cv2_f >> 4, env);
+  channels_update(delta, hal_input_cv1(), hal_input_cv2(), env);
   uint16_t outs[NUM_OUTPUTS];
   uint8_t dirty = channels_take_outputs(outs);
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++)

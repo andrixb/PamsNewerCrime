@@ -2,10 +2,10 @@
 //
 // Builds the REAL production translation units (domain/euclid.cpp,
 // domain/scales.cpp, app/clock.cpp, app/channel.cpp, app/serialization.cpp,
-// app/patch.cpp, infra/hal_storage.cpp) on the host against small
-// Arduino/EEPROM/DAC mocks, and exercises their public behaviour. No
-// production code is duplicated here: every assertion runs through the
-// shipped engine.
+// app/patch.cpp, app/menu_model.cpp, infra/hal_storage.cpp) on the host
+// against small Arduino/EEPROM/DAC mocks, and exercises their public
+// behaviour. No production code is duplicated here: every assertion runs
+// through the shipped engine.
 //
 //   make test
 //
@@ -21,6 +21,7 @@
 #include "domain/euclid.h"
 #include "app/serialization.h"
 #include "app/patch.h"
+#include "app/menu_model.h"
 #include "app/storage_port.h"   // raw slot write for the version-rejection test
 #include "infra/dac.h"   // declarations only; definitions come from test/mock_hw.cpp
 
@@ -771,8 +772,96 @@ static void test_engine_no_io() {
   suite_ok("engine: no I/O without flush");
 }
 
-static void test_clock_tempo() {
-  const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+// ---------------------------------------------------------------------------
+// menu model (app/menu_model.cpp): group tables + get/set/label/format.
+// Moved out of the UI in Phase 4; pinned here so the split cannot silently
+// change what the panel browses or edits.
+// ---------------------------------------------------------------------------
+static void test_menu_groups() {
+  // Every mode browses a non-empty list, except OFF which has no shape params.
+  for (uint8_t m = 0; m < MODE_LAST; m++) {
+    uint8_t n = chan_param_count(m, 8);
+    if (m == MODE_OFF) CHECK(n == 0);
+    else CHECK(n > 0 && n < CH_PARAM_COUNT);
+  }
+  // Flat positions resolve inside the id space with a named group.
+  for (uint8_t m = 1; m < MODE_LAST; m++) {
+    uint8_t n = chan_param_count(m, 8);
+    for (uint8_t pos = 0; pos < n; pos++) {
+      CHECK(app_param_at(m, pos, 8) < CH_PARAM_COUNT);
+      const char *g = app_param_group(m, pos, 8);
+      CHECK(g != nullptr && g[0] != '\0');
+    }
+  }
+  // STEP mode expands the sequence into the shape group.
+  CHECK(chan_param_count(MODE_STEP, 1) == 27);
+  CHECK(chan_param_count(MODE_STEP, 8) == 41);
+  CHECK(app_param_at(MODE_STEP, 0, 8) == P_SLEN);
+  CHECK(app_param_at(MODE_STEP, 1, 8) == P_STEP0);
+  CHECK(app_param_at(MODE_STEP, 2, 8) == P_SPROB0);
+  CHECK(app_param_at(MODE_STEP, 3, 8) == P_STEP0 + 1);
+  CHECK(strcmp(app_param_group(MODE_PULSE, 0, 8), "pulse") == 0);  // shape = mode name
+  CHECK(strcmp(app_param_group(MODE_PULSE, 2, 8), "clock") == 0);  // width,delay then clock
+  suite_ok("menu: groups");
+}
+
+static void test_menu_get_set() {
+  channels_init(DEFAULT_RATIO);
+  // Clamps pin the edit contract.
+  menu_set_val(0, P_WIDTH, 300, MENU_CHANNEL);
+  CHECK(menu_get_val(0, P_WIDTH, MENU_CHANNEL) == 255);
+  menu_set_val(0, P_WIDTH, -5, MENU_CHANNEL);
+  CHECK(menu_get_val(0, P_WIDTH, MENU_CHANNEL) == 1);
+  menu_set_val(0, P_MODE, MODE_LAST + 5, MENU_CHANNEL);
+  CHECK(menu_get_val(0, P_MODE, MENU_CHANNEL) == MODE_LAST - 1);
+  menu_set_val(0, P_RATIO, 99, MENU_CHANNEL);
+  CHECK(menu_get_val(0, P_RATIO, MENU_CHANNEL) == RATIO_COUNT - 1);
+  // Euclid edits rebuild the pattern.
+  menu_set_val(0, P_EULEN, 4, MENU_CHANNEL);
+  CHECK(channels[0].mask == 0xF);   // 4/4 -> all four slots
+  menu_set_val(0, P_EUFILL, 1, MENU_CHANNEL);
+  CHECK(channels[0].mask == 0x1);   // 1/4 Bjorklund -> slot 0
+  // Master page clamps.
+  menu_set_val(0, 0, 5, MENU_MASTER);
+  CHECK(menu_get_val(0, 0, MENU_MASTER) == BPM_MIN);
+  menu_set_val(0, 0, 99999, MENU_MASTER);
+  CHECK(masterClock.bpm_cent == BPM_MAX);   // stored exact (uint16_t) ...
+  CHECK(menu_get_val(0, 0, MENU_MASTER) != BPM_MAX);  // ... but the int16_t read wraps (historic quirk)
+  menu_set_val(0, 0, 20000, MENU_MASTER);
+  CHECK(menu_get_val(0, 0, MENU_MASTER) == 20000);
+  menu_set_val(0, 3, 99, MENU_MASTER);
+  CHECK(menu_get_val(0, 3, MENU_MASTER) == 63);
+  // Per-step values + probabilities.
+  menu_set_val(0, P_STEP0 + 2, 200, MENU_CHANNEL);
+  CHECK(menu_get_val(0, P_STEP0 + 2, MENU_CHANNEL) == 200);
+  menu_set_val(0, P_SPROB0 + 2, 150, MENU_CHANNEL);
+  CHECK(menu_get_val(0, P_SPROB0 + 2, MENU_CHANNEL) == 100);
+  suite_ok("menu: get/set");
+}
+
+static void test_menu_labels() {
+  char buf[20];
+  channels_init(DEFAULT_RATIO);
+  channels[0].p.mode = MODE_LFO;
+  menu_fmt_val(0, P_MODE, MENU_CHANNEL, buf, sizeof(buf));
+  CHECK(strcmp(buf, "LFO") == 0);
+  menu_fmt_val(0, P_RATIO, MENU_CHANNEL, buf, sizeof(buf));
+  CHECK(strcmp(buf, RATIO_TABLE[DEFAULT_RATIO].label) == 0);
+  CHECK(strcmp(menu_label_of(0, P_RATIO, MENU_CHANNEL), "ratio") == 0);
+  CHECK(strcmp(menu_label_of(0, P_SPROB0 + 3, MENU_CHANNEL), "s4 prob") == 0);
+  masterClock.bpm_cent = 12000;
+  menu_fmt_val(0, 0, MENU_MASTER, buf, sizeof(buf));
+  CHECK(strcmp(buf, "120.00") == 0);
+  CHECK(strcmp(menu_label_of(0, 0, MENU_MASTER), "BPM") == 0);
+  menu_fmt_val(0, P_DIVA, MENU_CHANNEL, buf, sizeof(buf));
+  CHECK(strcmp(buf, "1:1") == 0);   // default div_a = 0
+  channels[0].p.div_a = 4;
+  menu_fmt_val(0, P_DIVA, MENU_CHANNEL, buf, sizeof(buf));
+  CHECK(strcmp(buf, "/4") == 0);
+  suite_ok("menu: labels");
+}
+
+static void test_clock_tempo() {  const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
   masterClock = MasterClock{};
   masterClock.bpm_cent = 6000;           // 60 BPM -> quarter == 1000 ticks
   masterClock.source = 0; masterClock.running = true; masterClock.swing = 0;
@@ -901,6 +990,9 @@ int main() {
   test_channel_cvmod();
   test_channel_flex();
   test_engine_no_io();
+  test_menu_groups();
+  test_menu_get_set();
+  test_menu_labels();
   test_clock_tempo();
   test_blob_golden();
   test_storage_roundtrip();
