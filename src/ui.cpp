@@ -87,7 +87,7 @@ static PncSpiOled oled_spi;
 static Adafruit_GFX *gfx = &oled_spi;
 #define PNC_BLACK 0
 #define PNC_WHITE 1
-// Left text column ends and the right output-meter column begins here. All text,
+// Left text column ends and the right scope column begins here. All text,
 // selection highlights and group labels stay strictly left of METR_X.
 #define METR_X 88
 static bool display_ok = false;
@@ -582,10 +582,29 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
 static volatile int8_t pending_action = -1;
 static void do_action(uint8_t idx);
 
-// Decaying peak-hold of each output level, updated at 1 kHz (see ui_service).
-// Full-scale fall time: DAC_MAX_MV / METER_DECAY_MV_MS ~= 625 ms.
-#define METER_DECAY_MV_MS 16
-static uint16_t meter_pk[NUM_OUTPUTS] = { 0 };
+// Scrolling waveform scope drawn in the right column (see ui_draw). The engine
+// samples every output at 1 kHz / SCOPE_DECIMATE and shifts the history up, so
+// time flows bottom-up: newest sample at the column floor, amplitude mapped
+// across the column width. Purely live data - no peak-hold, nothing to latch.
+#define SCOPE_ROWS 54            // interior rows of the scope box (y 9..62)
+#define SCOPE_DECIMATE 8         // ms per history row -> ~430 ms window
+static uint8_t scope_hist[NUM_OUTPUTS][SCOPE_ROWS];  // bits 0..6 = level 0..127, bit 7 = gate
+static uint8_t scope_head = 0;                        // index of the newest sample
+
+static void scope_push() {
+  scope_head = (uint8_t)((scope_head + 1) % SCOPE_ROWS);
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
+    int32_t lo = channels[i].p.cv_min, hi = channels[i].p.cv_max;
+    int32_t span = hi - lo;
+    int32_t lv = 0;
+    if (span > 0) {
+      lv = ((int32_t)channels[i].out_mv - lo) * 127 / span;
+      if (lv < 0) lv = 0;
+      if (lv > 127) lv = 127;
+    }
+    scope_hist[i][scope_head] = (uint8_t)lv | (channels[i].gate_state ? 0x80 : 0);
+  }
+}
 
 void ui_run_pending() {
   if (pending_action < 0) return;
@@ -746,17 +765,7 @@ static void select_rel(int8_t d) {
 void ui_service() {
   ui_ticks++;
 
-  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
-    // Peak-hold with linear decay: follows the signal instantly on the way up,
-    // falls at a fixed mV/ms so the bar visibly pulsates at any tempo instead
-    // of latching to the per-frame maximum.
-    int32_t v = channels[i].out_mv;
-    int32_t pk = meter_pk[i];
-    if (v >= pk) pk = v;
-    else if (pk - v > METER_DECAY_MV_MS) pk -= METER_DECAY_MV_MS;
-    else pk = v;
-    meter_pk[i] = (uint16_t)pk;
-  }
+  if (ui_ticks % SCOPE_DECIMATE == 0) scope_push();
 
   enc_l.poll(PIN_ENC_A, PIN_ENC_B);
   enc_r.poll(PIN_ENC_R_A, PIN_ENC_R_B);
@@ -917,9 +926,18 @@ void ui_draw() {
   }
 
   if (is_sys()) {
-    for (uint8_t i = 0; i < SYS_ACTION_COUNT; i++) {
-      int16_t y = 12 + i * 10;
-      if (i == param_idx) { gfx->fillRect(0, y - 1, 128, 10, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
+    // 6-row scrolling window (y 12..62): the last item (defaults, scale edits)
+    // would otherwise be cut off by the bottom of the 64px panel. Keep the
+    // cursor inside the window by scrolling top when it passes the edges.
+    const uint8_t rows = 6;
+    uint8_t top = 0;
+    if (param_idx + 1 >= rows)
+      top = (param_idx >= SYS_ACTION_COUNT - 1) ? (SYS_ACTION_COUNT - rows) : (param_idx - rows + 1);
+    for (uint8_t r = 0; r < rows; r++) {
+      uint8_t i = top + r;
+      if (i >= SYS_ACTION_COUNT) break;
+      int16_t y = 12 + r * 8;
+      if (i == param_idx) { gfx->fillRect(0, y, 128, 8, PNC_WHITE); gfx->setTextColor(PNC_BLACK); }
       gfx->setCursor(0, y);
       gfx->printf("%s", SYS_ACTIONS[i]);
       if (i == param_idx) gfx->setTextColor(PNC_WHITE);
@@ -963,50 +981,45 @@ void ui_draw() {
     if (i_pos == param_idx) gfx->setTextColor(PNC_WHITE);
   }
 
-  // Right-side output meter: one tall bar per output. Normalized to each channel's
-  // cv_min..cv_max so full-scale fills the column. Everything (border, fill, and a
-  // gate strip drawn INSIDE the box at its base) stays within rows 9..62 and
-  // columns METR_X..127, with a bottom margin so nothing runs off-screen.
+  // Right column: scrolling waveform scope. Time flows bottom-up (newest row
+  // at the box floor), amplitude maps cv_min..cv_max across the column width,
+  // so pulse shape, tempo and level are all readable at a glance. It draws the
+  // live signal, so it can never freeze or stick at the top like a meter did.
   const int16_t mx = (int16_t)METR_X;
-  const int16_t col_w = 128 - mx;                // usable width for the meter
-  const int16_t bw = col_w / NUM_OUTPUTS;        // per-bar pitch
-  const int16_t box_top = 8, box_btm = 63;       // walls: top row 8, bottom row 63 (full height)
-  const int16_t cell_w = bw - 2;                 // drawn width (1px gutter each side)
-  const int16_t gate_h = 3;                      // gate band height, at the interior base
-  const int16_t lvl_base = box_btm;              // level rises from the box floor
-  const int16_t lvl_top = box_top + 1;           // level ceiling (interior top)
-  const int16_t lvl_h = lvl_base - lvl_top;      // fillable rows for the level
-  static int32_t meter_mv[NUM_OUTPUTS] = { 0 };  // smoothed display level
-  static int32_t meter_h[NUM_OUTPUTS] = { 0 };   // last drawn pixel height
-  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
-    int16_t x = mx + i * bw + 1;
-    gfx->drawRect(x, box_top, cell_w, box_btm - box_top + 1, PNC_WHITE);
-    int32_t lo = channels[i].p.cv_min, hi = channels[i].p.cv_max;
-    int32_t mv = (int32_t)channels[i].out_mv;
-    int32_t span = hi - lo;
-    // Feed the smoother the 1 kHz decaying peak-hold: rises with the signal,
-    // then coasts down, so the bar pulsates cleanly at any tempo.
-    int32_t target = meter_pk[i] > (uint16_t)mv ? meter_pk[i] : mv;
-    // Fast attack, slow release, so LFO/woggle output reads as a level instead
-    // of strobing at the signal rate.
-    int32_t d = target - meter_mv[i];
-    meter_mv[i] += d > 0 ? (d + 1) / 2 : (d - 7) / 8;
-    int32_t h = 0;
-    if (span > 0 && lvl_h > 0) {
-      h = (meter_mv[i] - lo) * lvl_h / span;
-      if (h < 0) h = 0;
-      if (h > lvl_h) h = lvl_h;
+  const int16_t box_top = 8, box_btm = 63;
+  gfx->drawRect(mx, box_top, 128 - mx, box_btm - box_top + 1, PNC_WHITE);
+  const int16_t rx1 = mx + (128 - mx) - 2;   // rightmost usable trace column
+  if (is_master()) {
+    // Overview: one thin band per output, newest sample at each band's bottom,
+    // and one black separator row left free between bands (bands never draw it).
+    const int16_t bh = (box_btm - box_top - 1) / NUM_OUTPUTS;
+    const int16_t rx0 = mx + 1;
+    for (uint8_t c = 0; c < NUM_OUTPUTS; c++) {
+      int16_t prev = -1;
+      for (int16_t r = 0; r < bh - 1; r++) {
+        uint8_t s = scope_hist[c][(scope_head + SCOPE_ROWS - (bh - 1) + r) % SCOPE_ROWS];
+        int16_t y = box_top + 1 + c * bh + r;
+        int16_t x = rx1 - (int16_t)(s & 0x7F) * (rx1 - rx0) / 127;
+        if (prev >= 0) gfx->drawLine(prev, y - 1, x, y, PNC_WHITE);
+        gfx->drawPixel(x, y, PNC_WHITE);
+        prev = x;
+      }
     }
-    // 1px deadband: tiny level wobbles don't redraw the bar.
-    if (h > meter_h[i] + 1 || h < meter_h[i] - 1) meter_h[i] = h;
-    h = meter_h[i];
-    // level occupies rows [box_btm-h, box_btm-1]; starts flush at the box floor.
-    if (h) gfx->fillRect(x + 1, box_btm - h, cell_w - 2, h, PNC_WHITE);
-    // gate indicator: solid band at the base, with a 1px black separator above
-    // it so it stays distinct when the level fill runs through the same rows.
-    if (channels[i].gate_state) {
-      gfx->fillRect(x + 1, box_btm - gate_h, cell_w - 2, gate_h, PNC_WHITE);
-      gfx->drawLine(x + 1, box_btm - gate_h - 1, x + cell_w - 2, box_btm - gate_h - 1, PNC_BLACK);
+  } else {
+    // Channel page: full-height trace of this output + a 1px gate-history
+    // strip on the left, so gate rhythm reads independently of the CV shape.
+    uint8_t c = ch_of_page();
+    const int16_t gx = mx + 1;
+    const int16_t rx0 = mx + 3;
+    int16_t prev = -1;
+    for (int16_t r = 0; r < SCOPE_ROWS; r++) {
+      uint8_t s = scope_hist[c][(scope_head + 1 + r) % SCOPE_ROWS];
+      int16_t y = box_top + 1 + r;
+      if (s & 0x80) gfx->drawPixel(gx, y, PNC_WHITE);
+      int16_t x = rx1 - (int16_t)(s & 0x7F) * (rx1 - rx0) / 127;
+      if (prev >= 0) gfx->drawLine(prev, y - 1, x, y, PNC_WHITE);
+      gfx->drawPixel(x, y, PNC_WHITE);
+      prev = x;
     }
   }
   oled_flush();
