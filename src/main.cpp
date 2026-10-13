@@ -1,57 +1,45 @@
 #include <Arduino.h>
 #include "pam_config.h"
-#include "clock.h"
-#include "channel.h"
-#include "storage.h"
-#include "ui.h"
-#include "dac.h"
+#include "app/clock.h"
+#include "app/channel.h"
+#include "app/patch.h"
+#include "infra/ui.h"
+#include "infra/hal_input.h"
+#include "infra/dac.h"
 
 static IntervalTimer ctrl_timer;
 static volatile uint32_t tick_count = 0;
-static uint16_t cv1_f = 2048, cv2_f = 2048;
-static uint32_t last_save_ms = 0;
 static uint32_t last_ui_ms = 0;
 
 static void ck_isr() {
   masterClock.pulse_external();
 }
 
+// Time port for the app clock (external-sync timeout + tempo measurement).
+uint32_t clock_now_us() { return micros(); }
+
 static void control_tick() {
   tick_count++;
   ui_service();               // 1 kHz: poll + apply encoders/buttons
-  if ((tick_count % 8) == 0) {
-    uint16_t r1 = analogRead(PIN_CV_IN1);
-    uint16_t r2 = analogRead(PIN_CV_IN2);
-#if PNC_CV_INVERT
-    // This board's CV input stage inverts (measured: 0V -> ~4095, 10V -> ~170).
-    r1 = 4095 - r1;
-    r2 = 4095 - r2;
-#endif
-    cv1_f = cv1_f - (cv1_f >> 2) + (r1 >> 2);
-    cv2_f = cv2_f - (cv2_f >> 2) + (r2 >> 2);
-  }
+  if ((tick_count % 8) == 0) hal_input_sample_cv();
   masterClock.tick();
   uint32_t delta = masterClock.take_delta();
-  channels_update(delta, cv1_f >> 4, cv2_f >> 4);
-}
-
-static void autosave() {
-  uint32_t now = millis();
-  if (state_dirty() && now - last_save_ms > 3000) {
-    last_save_ms = now;
-    StoreBlob blob;
-    capture_state(blob);
-    storage_save(SLOT_ACTIVE, blob);
-  }
+  // App computes (no I/O); infra emits. The env carries the globals the
+  // engine needs instead of it reading them itself.
+  const EngineEnv env = { USER_SCALES };
+  channels_update(delta, hal_input_cv1(), hal_input_cv2(), env);
+  uint16_t outs[NUM_OUTPUTS];
+  uint8_t dirty = channels_take_outputs(outs);
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++)
+    if (dirty & (uint8_t)(1u << i)) dac_write(i, outs[i]);
 }
 
 void setup() {
   Serial.begin(115200);
   analogReadResolution(12);
   dac_init();
-  storage_init();
+  patch_init();
   ui_init();
-  masterClock.begin();
 #if TR_ACTIVE_LOW
   pinMode(PIN_CK_IN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_CK_IN), ck_isr, FALLING);
@@ -86,7 +74,7 @@ void loop() {
   if (cm - last_cvlog_ms > 250) {
     last_cvlog_ms = cm;
     Serial.printf("cv: ADC1=%4u ADC2=%4u | out(mV) %4u %4u %4u %4u | run=%d\n",
-                  cv1_f, cv2_f,
+                  hal_input_cv1_raw(), hal_input_cv2_raw(),
                   channels[0].out_mv, channels[1].out_mv,
                   channels[2].out_mv, channels[3].out_mv,
                   masterClock.running);
@@ -104,6 +92,6 @@ void loop() {
   if (now - last_ui_ms > 33) {
     last_ui_ms = now;
     ui_draw();
-    autosave();
+    patch_autosave_tick(now);
   }
 }

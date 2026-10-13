@@ -1,4 +1,4 @@
-#include "clock.h"
+#include "app/clock.h"
 
 MasterClock masterClock;
 
@@ -13,10 +13,6 @@ static uint32_t warp_raw(uint32_t rb, uint32_t rawA, uint32_t half) {
   if (rb <= rawA) return (uint32_t)((uint64_t)rb * half / rawA);
   uint32_t seg2 = QT - rawA;
   return half + (uint32_t)((uint64_t)(rb - rawA) * half / seg2);
-}
-
-void MasterClock::begin() {
-  pinMode(PIN_CK_IN, INPUT);
 }
 
 void MasterClock::pulse_external() {
@@ -77,14 +73,14 @@ void MasterClock::tick() {
     uint32_t newp = pulses - consumed_pulses;
     if (!newp) {
       if (ext_avg_us > 0) {
-        uint32_t now = micros();
+        uint32_t now = clock_now_us();
         uint64_t gap = (uint32_t)(now - ext_last_us);
         if (gap > (uint64_t)ext_avg_us * 4) { ext_avg_us = 0; ext_bpm_cent = 0; }
       }
       return;
     }
     consumed_pulses = pulses;
-    uint32_t now = micros();
+    uint32_t now = clock_now_us();
     if (ext_avg_us > 0) {
       uint32_t per = now - ext_last_us;
       if (per < (uint32_t)ext_avg_us * 4) ext_avg_us = ext_avg_us * 0.9f + per * 0.1f;

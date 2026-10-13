@@ -1,35 +1,8 @@
-#include "channel.h"
-#include "euclid.h"
-#include "dac.h"
+#include "app/channel.h"
+#include "domain/euclid.h"
 #include <string.h>
 
-const Ratio RATIO_TABLE[] = {
-  { "1/64", 1536 },
-  { "1/13", 1890 },
-  { "1/32T", 2048 },
-  { "1/11", 2234 },
-  { "1/9", 2731 },
-  { "1/32", 3072 },
-  { "1/7", 3511 },
-  { "1/16T", 4096 },
-  { "1/32.", 4608 },
-  { "1/5", 4915 },
-  { "1/16", 6144 },
-  { "1/8T", 8192 },
-  { "1/16.", 9216 },
-  { "1/8", 12288 },
-  { "1/4T", 16384 },
-  { "1/8.", 18432 },
-  { "1/4", 24576 },
-  { "1/2T", 32768 },
-  { "1/4.", 36864 },
-  { "1/2", 49152 },
-  { "1/2.", 73728 },
-  { "1bar", 98304 },
-  { "2bar", 196608 },
-  { "4bar", 393216 },
-};
-const uint8_t RATIO_COUNT = sizeof(RATIO_TABLE) / sizeof(RATIO_TABLE[0]);
+static_assert(NUM_OUTPUTS <= 8, "dirty mask in channels_take_outputs is 8 bits");
 
 Channel channels[NUM_OUTPUTS];
 
@@ -40,51 +13,6 @@ static const uint16_t SINE_LUT[65] = {
   680, 608, 535, 461, 386, 310, 233, 156, 78, 0,
   0, 0, 0, 0, 0, 0, 0, 0, 0
 };
-
-static const uint16_t SCALE_MASKS[] = {
-  0xFFF,  // chromatic
-  0xAB5,  // major
-  0x5AD,  // minor
-  0x6AD,  // dorian
-  0x5AB,  // phrygian
-  0xAD5,  // lydian
-  0x6B5,  // mixolydian
-  0x9AD,  // harmonic minor
-  0x295,  // pentatonic major
-  0x4A9,  // pentatonic minor
-  0x4E9,  // blues
-  0x555,  // whole tone
-  0xAAD,  // melodic minor
-  0x9B5,  // harmonic major
-  0x6CD,  // dorian #4
-  0x5B3,  // phrygian dominant
-  0x56B,  // locrian
-  0x55B,  // altered
-  0x6D5,  // lydian dominant
-  0x9B3,  // double harmonic
-  0xD53,  // enigmatic
-  0x18D,  // hirajoshi
-  0x1A3,  // in
-  0x8C3,  // iwato
-  0x655,  // prometheus
-  0x4D3,  // tritone
-  0xB6D,  // diminished
-  0x999,  // augmented
-  0xAF5,  // blues major
-};
-const uint8_t SCALE_COUNT = (sizeof(SCALE_MASKS) / sizeof(SCALE_MASKS[0])) + USER_SCALE_COUNT;
-
-uint16_t USER_SCALES[USER_SCALE_COUNT] = { 0xFFF, 0xAB5, 0x5AD };
-uint8_t DEFAULT_RATIO = 6;   // channels_init() default (kept from the old hard-coded ratio)
-
-// Resolve a scale index (built-in tables, then the 3 editable user slots) to a
-// 12-bit semitone mask.
-uint16_t scale_mask(uint8_t idx) {
-  uint8_t nb = (uint8_t)(SCALE_COUNT - USER_SCALE_COUNT);
-  if (idx < nb) return SCALE_MASKS[idx];
-  uint8_t u = idx - nb;
-  return USER_SCALES[u < USER_SCALE_COUNT ? u : 0];
-}
 
 static int quantize_semi(int pos, uint16_t mask) {
   int oct = pos / 12, m = pos % 12;
@@ -145,11 +73,11 @@ static void apply_cv(ChannelParams &p, uint8_t src, int8_t scale, int val) {
   }
 }
 
-void channels_init() {
+void channels_init(uint8_t default_ratio) {
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     Channel &c = channels[i];
     memset(&c.p, 0, sizeof(c.p));
-    c.p.ratio = DEFAULT_RATIO < RATIO_COUNT ? DEFAULT_RATIO : 6;
+    c.p.ratio = default_ratio < RATIO_COUNT ? default_ratio : 6;
     c.p.mode = MODE_PULSE;
     c.p.width = 64;
     c.p.skew = 128;
@@ -188,8 +116,21 @@ void channels_reset() {
     c.ev_off = 0;
     c.pend = 0;
     c.rate256 = 256;
-    dac_write(i, 0);
+    c.out_dirty = 1;   // hardware must re-assert every output (was dac_write(i, 0))
   }
+}
+
+uint8_t channels_take_outputs(uint16_t out_mv[NUM_OUTPUTS]) {
+  uint8_t mask = 0;
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
+    Channel &c = channels[i];
+    if (c.out_dirty) {
+      mask |= (uint8_t)(1u << i);
+      out_mv[i] = c.out_mv;
+      c.out_dirty = 0;
+    }
+  }
+  return mask;
 }
 
 void channel_rebuild_euclid(Channel &c) {
@@ -263,13 +204,14 @@ static int32_t scaled(const ChannelParams &p, uint16_t frac) {
   return constrain(v, 0, DAC_MAX_MV);
 }
 
-void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
+void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
+                     const EngineEnv &env) {
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     Channel &c = channels[i];
     ChannelParams p = c.p;
 
     if (p.mode == MODE_OFF) {
-      if (c.out_mv) { c.out_mv = 0; dac_write(i, 0); }
+      if (c.out_mv) { c.out_mv = 0; c.out_dirty = 1; }
       c.gate_state = 0;
       c.pos_x256 += delta_x256;
       continue;
@@ -393,7 +335,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
         uint32_t st = span / 83;
         if (st < 1) st = 1;
         int pos = (int)((st * ph256) >> 8);
-        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT));
+        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales));
         frac = (uint16_t)((uint32_t)q * 2048 / st);
         if (frac > 2048) frac = 2048;
         uint8_t note = q > 255 ? 255 : (uint8_t)q;
@@ -413,7 +355,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
 #endif
         rv = constrain(rv, 0, 255);
         int pos = (int)((uint32_t)rv * st / 255);
-        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT));
+        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales));
         frac = (uint16_t)((uint32_t)q * 2048 / st);
         if (frac > 2048) frac = 2048;
         uint8_t note = q > 255 ? 255 : (uint8_t)q;
@@ -507,7 +449,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
       bool ahi = a >= (DAC_MAX_MV / 2);  // gate-high threshold for logic ops
       bool rise = (a >= (DAC_MAX_MV / 10)) && !c.x_hi;
       c.x_hi = (a >= (DAC_MAX_MV / 10));
-      uint32_t t;
+      int32_t t;
       switch (p.xop) {
         case XOP_MIX:  mv = (uint16_t)(((uint32_t)mv + a) / 2); break;
         case XOP_MASK: if (a < (DAC_MAX_MV / 10)) mv = 0; break;
@@ -515,7 +457,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
         case XOP_MULT: mv = (uint16_t)(((uint32_t)mv * a) / DAC_MAX_MV); break;
         case XOP_HOLD: if (a < (DAC_MAX_MV / 10)) mv = c.hold_mv; else c.hold_mv = mv; break;
         case XOP_SH:   if (rise) c.hold_mv = mv; mv = c.hold_mv; break;
-        case XOP_ADD:  t = (uint32_t)mv + a; mv = t > DAC_MAX_MV ? DAC_MAX_MV : (uint16_t)t; break;
+        case XOP_ADD:  t = (int32_t)mv + (int32_t)a; mv = t > DAC_MAX_MV ? DAC_MAX_MV : (uint16_t)t; break;
         case XOP_SUB:  t = (int32_t)mv - (int32_t)a; mv = t < 0 ? 0 : (uint16_t)t; break;
         case XOP_AND:  if (!(mv >= (DAC_MAX_MV / 10) && ahi)) mv = 0; break;
         case XOP_OR:   if (ahi) mv = mv > a ? mv : a; break;
@@ -532,7 +474,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
       uint32_t st = span / 83;
       if (st < 1) st = 1;
       int semis = (int)(((uint32_t)(mv > p.cv_min ? mv - p.cv_min : 0) * st) / (span ? span : 1));
-      int q = quantize_semi(semis, scale_mask(p.scale));
+      int q = quantize_semi(semis, scale_mask(p.scale, env.user_scales));
       int32_t m = (int32_t)q * 83;
       if (m > p.cv_max - p.cv_min) m = p.cv_max - p.cv_min;
       mv = (uint16_t)(p.cv_min + m);
@@ -546,6 +488,6 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
       c.filt_mv = mv;
     }
     c.out_mv = mv;
-    dac_write(i, mv);
+    c.out_dirty = 1;   // emitted by the caller via channels_take_outputs()
   }
 }
