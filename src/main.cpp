@@ -1,10 +1,10 @@
 #include <Arduino.h>
 #include "pam_config.h"
-#include "clock.h"
-#include "channel.h"
-#include "storage.h"
-#include "ui.h"
-#include "dac.h"
+#include "app/clock.h"
+#include "app/channel.h"
+#include "app/storage.h"
+#include "infra/ui.h"
+#include "infra/dac.h"
 
 static IntervalTimer ctrl_timer;
 static volatile uint32_t tick_count = 0;

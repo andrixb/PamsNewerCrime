@@ -2,7 +2,7 @@
 // symbols the Arduino/Teensy headers declare but production code only calls.
 #include "mock/Arduino.h"
 #include "mock/EEPROM.h"
-#include "dac.h"
+#include "infra/dac.h"
 #include <string.h>
 
 uint32_t mock_time_us = 0;

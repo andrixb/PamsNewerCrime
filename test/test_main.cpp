@@ -1,9 +1,10 @@
 // Native unit tests for Pam's Newer Crime.
 //
-// Builds the REAL production translation units (euclid.cpp, clock.cpp,
-// channel.cpp, storage.cpp) on the host against small Arduino/EEPROM/DAC
-// mocks, and exercises their public behaviour. No production code is
-// duplicated here: every assertion runs through the shipped engine.
+// Builds the REAL production translation units (domain/euclid.cpp,
+// domain/scales.cpp, app/clock.cpp, app/channel.cpp, app/storage.cpp) on the
+// host against small Arduino/EEPROM/DAC mocks, and exercises their public
+// behaviour. No production code is duplicated here: every assertion runs
+// through the shipped engine.
 //
 //   make test
 //
@@ -14,10 +15,10 @@
 
 #include "mock/EEPROM.h"
 
-#include "channel.h"
-#include "clock.h"
-#include "euclid.h"
-#include "storage.h"
+#include "app/channel.h"
+#include "app/clock.h"
+#include "domain/euclid.h"
+#include "app/storage.h"
 
 extern uint32_t mock_time_us;
 extern uint16_t mock_dac_mv[];

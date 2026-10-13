@@ -1,6 +1,6 @@
-#include "ui.h"
-#include "clock.h"
-#include "storage.h"
+#include "infra/ui.h"
+#include "app/clock.h"
+#include "app/storage.h"
 #include <Adafruit_GFX.h>
 #include <string.h>
 

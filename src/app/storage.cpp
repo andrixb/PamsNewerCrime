@@ -1,5 +1,5 @@
-#include "storage.h"
-#include "clock.h"
+#include "app/storage.h"
+#include "app/clock.h"
 #include <EEPROM.h>
 #include <string.h>
 

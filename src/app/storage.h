@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include "pam_config.h"
-#include "channel.h"
+#include "app/channel.h"
 
 struct MasterPersist {
   uint16_t bpm_cent;
