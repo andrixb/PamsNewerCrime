@@ -100,7 +100,7 @@ const char *app_param_group(uint8_t mode, uint8_t pos, uint8_t slen);
 
 enum MenuPage : uint8_t { MENU_MASTER, MENU_CHANNEL };
 
-int16_t menu_get_val(uint8_t ch, uint8_t idx, MenuPage pg);
+int32_t menu_get_val(uint8_t ch, uint8_t idx, MenuPage pg);
 void menu_set_val(uint8_t ch, uint8_t idx, int32_t v, MenuPage pg);
 const char *menu_label_of(uint8_t ch, uint8_t idx, MenuPage pg);
 void menu_fmt_val(uint8_t ch, uint8_t idx, MenuPage pg, char *buf, size_t n);

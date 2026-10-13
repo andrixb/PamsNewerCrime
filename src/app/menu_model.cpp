@@ -147,7 +147,7 @@ const char* app_param_group(uint8_t mode, uint8_t pos, uint8_t slen) {
   return MODE_NAMES[mode];
 }
 
-int16_t menu_get_val(uint8_t ch, uint8_t idx, MenuPage pg) {
+int32_t menu_get_val(uint8_t ch, uint8_t idx, MenuPage pg) {
   if (pg == MENU_MASTER) {
     switch (idx) {
       case 0: return masterClock.bpm_cent;
@@ -339,7 +339,7 @@ const char *menu_label_of(uint8_t ch, uint8_t idx, MenuPage pg) {
 }
 
 void menu_fmt_val(uint8_t ch, uint8_t idx, MenuPage pg, char *buf, size_t n) {
-  int16_t v = menu_get_val(ch, idx, pg);
+  int32_t v = menu_get_val(ch, idx, pg);
   if (pg == MENU_MASTER) {
     switch (idx) {
       case 0: snprintf(buf, n, "%d.%02d", v / 100, v % 100); break;

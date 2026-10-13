@@ -825,8 +825,12 @@ static void test_menu_get_set() {
   menu_set_val(0, 0, 5, MENU_MASTER);
   CHECK(menu_get_val(0, 0, MENU_MASTER) == BPM_MIN);
   menu_set_val(0, 0, 99999, MENU_MASTER);
-  CHECK(masterClock.bpm_cent == BPM_MAX);   // stored exact (uint16_t) ...
-  CHECK(menu_get_val(0, 0, MENU_MASTER) != BPM_MAX);  // ... but the int16_t read wraps (historic quirk)
+  CHECK(menu_get_val(0, 0, MENU_MASTER) == BPM_MAX);   // no int16_t wrap at high BPM
+  menu_set_val(0, 0, (int32_t)BPM_MAX + 100, MENU_MASTER);  // encoder step past max clamps
+  CHECK(menu_get_val(0, 0, MENU_MASTER) == BPM_MAX);
+  char bpmbuf[20];
+  menu_fmt_val(0, 0, MENU_MASTER, bpmbuf, sizeof(bpmbuf));
+  CHECK(strcmp(bpmbuf, "330.00") == 0);
   menu_set_val(0, 0, 20000, MENU_MASTER);
   CHECK(menu_get_val(0, 0, MENU_MASTER) == 20000);
   menu_set_val(0, 3, 99, MENU_MASTER);
