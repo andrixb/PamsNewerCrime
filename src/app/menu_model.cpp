@@ -101,6 +101,7 @@ const char* group_name(uint8_t code, uint8_t mode) {
 }
 // Resolve position `local` within group `code` to a raw P_* index.
 uint8_t group_raw(uint8_t code, uint8_t local, uint8_t mode, uint8_t slen) {
+  (void)slen;   // bounds-checked by the caller via group_count(); only `local` matters here
   switch (code) {
     case G_SHAPE:
       if (mode == MODE_STEP) {
@@ -232,8 +233,16 @@ void menu_set_val(uint8_t ch, uint8_t idx, int32_t v, MenuPage pg) {
     case P_WAVE: p.wave = constrain(v, 0, LFO_LAST - 1); break;
     case P_WIDTH: p.width = constrain(v, 1, 255); break;
     case P_SKEW: p.skew = constrain(v, 0, 255); break;
-    case P_CVMIN: p.cv_min = constrain(v, 0, DAC_MAX_MV); if (p.cv_max < p.cv_min) p.cv_max = p.cv_min; break;
-    case P_CVMAX: p.cv_max = constrain(v, 0, DAC_MAX_MV); if (p.cv_min > p.cv_max) p.cv_min = p.cv_max; break;
+    case P_CVMIN: {
+      p.cv_min = constrain(v, 0, DAC_MAX_MV);
+      if (p.cv_max < p.cv_min) p.cv_max = p.cv_min;
+      break;
+    }
+    case P_CVMAX: {
+      p.cv_max = constrain(v, 0, DAC_MAX_MV);
+      if (p.cv_min > p.cv_max) p.cv_min = p.cv_max;
+      break;
+    }
     case P_INV: p.invert = v ? 1 : 0; break;
     case P_PHASE: p.phase = constrain(v, 0, 255); break;
     case P_DELAY: p.delay = constrain(v, 0, 255); break;
@@ -342,7 +351,7 @@ void menu_fmt_val(uint8_t ch, uint8_t idx, MenuPage pg, char *buf, size_t n) {
   int32_t v = menu_get_val(ch, idx, pg);
   if (pg == MENU_MASTER) {
     switch (idx) {
-      case 0: snprintf(buf, n, "%d.%02d", v / 100, v % 100); break;
+      case 0: snprintf(buf, n, "%d.%02d", (int)(v / 100), (int)(v % 100)); break;
       case 1: snprintf(buf, n, "%s", SRC_NAMES[v % SRC_COUNT]); break;
       case 2: snprintf(buf, n, "%d", v); break;
       case 3: snprintf(buf, n, v ? "%d%%" : "off", (int16_t)v * 100 / 63); break;

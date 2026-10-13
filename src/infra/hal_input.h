@@ -69,3 +69,5 @@ void hal_input_poll();    // poll all six pins (1 kHz tick)
 void hal_input_sample_cv();  // ADC read + filter (every 8th tick, was main.cpp)
 uint8_t hal_input_cv1();     // filtered 8-bit values for the engine
 uint8_t hal_input_cv2();
+uint16_t hal_input_cv1_raw();  // filtered 12-bit values (CV bring-up telemetry)
+uint16_t hal_input_cv2_raw();

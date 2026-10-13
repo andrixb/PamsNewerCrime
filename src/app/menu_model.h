@@ -5,7 +5,7 @@
 // performs no hardware I/O. Moved verbatim from infra/ui.cpp (Phase 4),
 // except get/set/label/format now take an explicit MenuPage instead of
 // reading the controller's page state.
-#include <Arduino.h>
+#include <stdint.h>
 #include <stddef.h>
 #include "pam_config.h"
 #include "app/channel.h"

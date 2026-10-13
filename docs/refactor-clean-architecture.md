@@ -12,7 +12,38 @@ infrastructure) with one-way dependencies, without changing runtime behavior.
 - [x] Phase 3 — storage split (serialization + storage port + patch use cases;
   `make test` + `build40` + `build41` green)
 - [x] Phase 4 — split ui.cpp (menu_model + hal_input + display/*; `make test` + `build40` + `build41` green)
-- [ ] Phase 5 — composition root + verification
+- [x] Phase 5 — composition root + verification (`make proof` layer check wired
+  into `make test`/CI; `pam_config.h` Arduino-free; clock time port;
+  `make test` + `build40` + `build41` green; hardware smoke list below)
+
+## As-built deviations from the target layout
+
+- `Channel` stayed in `app/channel.h` (it already cleanly separates `ChannelParams`
+  in domain from runtime state); no separate `channel_state.h`/`engine.h` rename.
+- `infra/dac.h` kept its name (not `hal_dac.h`); the storage adapter is a port
+  (`app/storage_port.h`) implemented by `infra/hal_storage.cpp`, not a standalone
+  header — this keeps app→infra includes at zero.
+- `app/menu_model.*` (new): the UI's browsable menu tables + get/set/label/format,
+  natively tested. `infra/display/` gained `saver`, `splash`, and `ui_nav` modules
+  beyond the plan's three.
+- Two latent bugs found and fixed along the way (both now test-pinned): master BPM
+  read wrapped above 32767 (`int16_t` → `int32_t`), and the `PNC_LOG_CV` telemetry
+  referenced ADC state moved to `hal_input` in Phase 4.
+- The engine still runs on the single global `channels[]` instance and keeps its
+  internal PRNG; full multi-instance parameterization was deferred as redesign,
+  not refactor.
+
+## Hardware smoke checklist (manual, on O_C hardware)
+
+- [ ] Boot splash plays (~3 s), panel lands on the master page, serial prints
+  `pnc: setup done`.
+- [ ] Browse every mode on a channel page (all 13 + off); check group headers and
+  value editing on each.
+- [ ] Screensaver appears after 60 s idle; any input wakes without nudging a value.
+- [ ] Bank A/B save + load from the SYS page; power-cycle → active patch autosaved
+  and restored.
+- [ ] External clock sync (24 PPQN) + swing page; confirm quarter boundaries stay
+  locked.
 
 ## Current state
 

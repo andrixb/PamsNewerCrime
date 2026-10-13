@@ -16,7 +16,18 @@ TEST_SRC := test/test_main.cpp test/mock_hw.cpp \
 TESTFLAGS := -std=gnu++17 -Wall -Wextra -Wno-unused-function \
              -Itest/mock -Isrc -DNUM_OUTPUTS=4
 
-.PHONY: build flash monitor test clean size dac-selftest $(ENV)
+# Layer proof: domain/ + app/ must compile with NO Arduino/mock on the include
+# path. Any <Arduino.h> leak or use of a mock-only symbol (micros,
+# digitalRead, ...) fails here. -fsyntax-only: checks translation, no link.
+# (infra/hal_storage.cpp is infra and binds <EEPROM.h>, so it is excluded.)
+PROOF_SRC := src/domain/euclid.cpp src/domain/scales.cpp \
+             src/app/clock.cpp src/app/channel.cpp \
+             src/app/serialization.cpp src/app/patch.cpp \
+             src/app/menu_model.cpp
+PROOFFLAGS := -std=gnu++17 -Wall -Wextra -Werror -fsyntax-only \
+              -Isrc -DNUM_OUTPUTS=4
+
+.PHONY: build flash monitor test proof clean size dac-selftest $(ENV)
 
 build:            ## compile the default env ($(ENV))
 	$(PIO) run -e $(ENV)
@@ -27,10 +38,13 @@ flash:            ## compile + flash to a connected Teensy in bootloader mode
 monitor:          ## serial console (115200)
 	$(PIO) device monitor -e $(ENV)
 
-test:             ## native unit tests (mocked Arduino/EEPROM/DAC)
+test: proof        ## native unit tests (mocked Arduino/EEPROM/DAC)
 	@mkdir -p build
 	$(CXX) $(TESTFLAGS) $(TEST_SRC) -o $(TEST_BIN)
 	@./$(TEST_BIN)
+
+proof:           ## layer check: domain+app compile with no Arduino/mock present
+	$(CXX) $(PROOFFLAGS) $(PROOF_SRC)
 
 dac-selftest:     ## build+flash a boot-time CV bring-up sweep (0->5->10->0 V per out)
 	PLATFORMIO_BUILD_FLAGS="-DPNC_DAC_SELFTEST=1" $(PIO) run -e $(ENV) -t upload

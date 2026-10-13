@@ -4,7 +4,7 @@
 //
 // Format-stable: the on-device layout must not change; any modification has
 // to break the golden test in test/test_main.cpp first.
-#include <Arduino.h>
+#include <stdint.h>
 #include "pam_config.h"
 #include "app/channel.h"
 

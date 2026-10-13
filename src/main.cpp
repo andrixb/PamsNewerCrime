@@ -15,6 +15,9 @@ static void ck_isr() {
   masterClock.pulse_external();
 }
 
+// Time port for the app clock (external-sync timeout + tempo measurement).
+uint32_t clock_now_us() { return micros(); }
+
 static void control_tick() {
   tick_count++;
   ui_service();               // 1 kHz: poll + apply encoders/buttons
@@ -37,7 +40,6 @@ void setup() {
   dac_init();
   patch_init();
   ui_init();
-  masterClock.begin();
 #if TR_ACTIVE_LOW
   pinMode(PIN_CK_IN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_CK_IN), ck_isr, FALLING);
@@ -72,7 +74,7 @@ void loop() {
   if (cm - last_cvlog_ms > 250) {
     last_cvlog_ms = cm;
     Serial.printf("cv: ADC1=%4u ADC2=%4u | out(mV) %4u %4u %4u %4u | run=%d\n",
-                  cv1_f, cv2_f,
+                  hal_input_cv1_raw(), hal_input_cv2_raw(),
                   channels[0].out_mv, channels[1].out_mv,
                   channels[2].out_mv, channels[3].out_mv,
                   masterClock.running);

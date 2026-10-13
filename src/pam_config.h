@@ -1,5 +1,17 @@
 #pragma once
-#include <Arduino.h>
+// Arduino-free by design: domain/ and app/ must compile on the host with no
+// Arduino toolchain on the include path (see `make proof`). Only stdint types
+// and plain macros live here; A5/A4 below expand solely in firmware TUs that
+// include <Arduino.h> themselves.
+#include <stdint.h>
+#include <stddef.h>
+
+// constrain() unless the Arduino core already provided it. Device TUs get
+// Arduino's identical macro; host and Arduino-free TUs get this one (both
+// guarded, so include order with <Arduino.h> or the test mock is safe).
+#ifndef constrain
+#define constrain(amt, low, high) ((amt) < (low) ? (low) : ((amt) > (high) ? (high) : (amt)))
+#endif
 
 #ifndef NUM_OUTPUTS
 #define NUM_OUTPUTS 4

@@ -1,5 +1,5 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
 #include "pam_config.h"
 #include "domain/channel_params.h"
 #include "domain/scales.h"

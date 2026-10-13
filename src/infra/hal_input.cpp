@@ -44,3 +44,5 @@ void hal_input_sample_cv() {
 
 uint8_t hal_input_cv1() { return cv1_f >> 4; }
 uint8_t hal_input_cv2() { return cv2_f >> 4; }
+uint16_t hal_input_cv1_raw() { return cv1_f; }
+uint16_t hal_input_cv2_raw() { return cv2_f; }
