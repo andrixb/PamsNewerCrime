@@ -708,7 +708,7 @@ static void do_action(uint8_t idx) {
       masterClock.source = 0;
       masterClock.ext_ppqn = 24;
       masterClock.running = true;
-      channels_init();
+      channels_init(DEFAULT_RATIO);
       break;
     case 5:
       ratio_sel = DEFAULT_RATIO;

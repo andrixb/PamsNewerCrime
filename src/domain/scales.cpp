@@ -70,9 +70,9 @@ uint8_t DEFAULT_RATIO = 6;   // channels_init() default (kept from the old hard-
 
 // Resolve a scale index (built-in tables, then the 3 editable user slots) to a
 // 12-bit semitone mask.
-uint16_t scale_mask(uint8_t idx) {
+uint16_t scale_mask(uint8_t idx, const uint16_t user_scales[USER_SCALE_COUNT]) {
   uint8_t nb = (uint8_t)(SCALE_COUNT - USER_SCALE_COUNT);
   if (idx < nb) return SCALE_MASKS[idx];
   uint8_t u = idx - nb;
-  return USER_SCALES[u < USER_SCALE_COUNT ? u : 0];
+  return user_scales[u < USER_SCALE_COUNT ? u : 0];
 }

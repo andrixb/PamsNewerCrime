@@ -19,6 +19,7 @@
 #include "app/clock.h"
 #include "domain/euclid.h"
 #include "app/storage.h"
+#include "infra/dac.h"   // declarations only; definitions come from test/mock_hw.cpp
 
 extern uint32_t mock_time_us;
 extern uint16_t mock_dac_mv[];
@@ -169,7 +170,15 @@ static void test_clock() {
 // channel engine
 // ---------------------------------------------------------------------------
 static void drive(uint32_t ticks, uint32_t delta = 96, uint8_t cv1 = 128, uint8_t cv2 = 128) {
-  for (uint32_t t = 0; t < ticks; t++) channels_update(delta, cv1, cv2);
+  // Mirrors the main.cpp composition: engine update (pure, no I/O), then the
+  // infra flush that lands dirty outputs on the (mocked) DAC.
+  for (uint32_t t = 0; t < ticks; t++) {
+    channels_update(delta, cv1, cv2, {USER_SCALES});
+    uint16_t vals[NUM_OUTPUTS];
+    uint8_t dirty = channels_take_outputs(vals);
+    for (uint8_t i = 0; i < NUM_OUTPUTS; i++)
+      if (dirty & (uint8_t)(1u << i)) dac_write(i, vals[i]);
+  }
 }
 
 // Configure channel 0 from init defaults. delta=96 -> one 1/4 cycle per 256 ticks.
@@ -179,7 +188,7 @@ static void setup_pulse(Channel &c, uint8_t ratio, uint8_t width) {
 }
 
 static void test_channel_pulse() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   setup_pulse(c, 16, 64);   // 1/4 note, 25% duty
 
@@ -203,27 +212,27 @@ static void test_channel_pulse() {
 }
 
 static void test_channel_div() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_DIV; c.p.div_a = 4; c.p.div_b = 0; c.p.width = 64; c.p.slew = 0;
   c.p.cv_min = 0; c.p.cv_max = 5000;
   drive(3072);                          // 12 quarters
   CHECK(c.event_count == 3);            // quarter /4 -> one event per 4 quarters
 
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   c.p.mode = MODE_DIV; c.p.div_a = -4; c.p.div_b = 0; c.p.width = 64; c.p.slew = 0;
   drive(1024);                          // 4 quarters
   CHECK(c.event_count == 16);           // x4 -> 16 events
 
   // Stages compose: /3 then x4 -> net 4/3 events per quarter (period = 3/4 quarter).
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   c.p.mode = MODE_DIV; c.p.div_a = 3; c.p.div_b = -4; c.p.width = 64; c.p.slew = 0;
   c.event_count = 0;
   drive(3072);                          // 12 quarters -> 16 events
   CHECK(c.event_count == 16);
 
   // Extreme multiply clamps safely (x32 * x32 -> /1024 of a quarter).
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   c.p.mode = MODE_DIV; c.p.div_a = -32; c.p.div_b = -32; c.p.width = 64; c.p.slew = 0;
   drive(1024);
   CHECK(c.event_count == 1024u * 96u / 24u);   // total units / period (period clamps to 24)
@@ -231,7 +240,7 @@ static void test_channel_div() {
 }
 
 static void test_channel_note() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_NOTE; c.p.ratio = 16; c.p.scale = 1;   // major
   c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0;       // 30 semitones, 83 mV/semi
@@ -255,7 +264,7 @@ static void test_channel_note() {
 }
 
 static void test_channel_step_prob() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_STEP; c.p.ratio = 16;
   c.p.step_len = 2; c.p.steps[0] = 255; c.p.steps[1] = 0;
@@ -274,7 +283,7 @@ static void test_channel_step_prob() {
 }
 
 static void test_channel_euclid() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   setup_pulse(c, 16, 64);
   c.p.eucl_en = 1; c.p.eucl_len = 8; c.p.eucl_fill = 3; c.p.eucl_rot = 0;
@@ -293,7 +302,7 @@ static void test_channel_euclid() {
 }
 
 static void test_channel_ratchet() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_RATCHET; c.p.ratio = 16; c.p.ratchets = 4; c.p.width = 64;
   c.p.delay = 0; c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0;
@@ -317,7 +326,7 @@ static void test_channel_ratchet() {
 }
 
 static void test_channel_crossop() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &a = channels[0], &b = channels[1];
   setup_pulse(a, 16, 255);                    // essentially always high after 1st event
   a.p.cv_max = 10000;
@@ -331,13 +340,13 @@ static void test_channel_crossop() {
   }
   CHECK(on_masked == 192);     // 3 gate windows of 64, unmasked (source high)
 
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   b.p.mode = MODE_PULSE; setup_pulse(b, 16, 64);
   b.p.xop = XOP_MASK; b.p.xsrc = 0;           // mask by unpatched CV1 (0V)
   int on_low = 0;
   drive(1024);
   for (uint32_t t = 0; t < 256; t++) {        // CV1 stays 0 throughout
-    channels_update(96, 0, 0);
+    channels_update(96, 0, 0, {USER_SCALES});
     if (b.out_mv > 0) on_low++;
   }
   CHECK(on_low == 0);          // masked dead while source is low
@@ -345,7 +354,7 @@ static void test_channel_crossop() {
 }
 
 static void test_channel_quant_app() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[1];
   c.p.mode = MODE_QUANT; c.p.quant_src = 0;   // CV1 jack
   c.p.scale = 1;                              // major
@@ -355,7 +364,7 @@ static void test_channel_quant_app() {
   int prev_mv = -1;
   bool off_grid = false, nonmono = false;
   for (int s = 0; s <= 255; s++) {
-    channels_update(0, (uint8_t)s, 0);
+    channels_update(0, (uint8_t)s, 0, {USER_SCALES});
     int best = -1;
     for (int k = 0; k <= 30; k++)
       if (abs((int)c.out_mv - k * 83) <= 3) best = k;
@@ -369,7 +378,7 @@ static void test_channel_quant_app() {
 }
 
 static void test_channel_lfo() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_LFO; c.p.ratio = 16; c.p.wave = LFO_SQR; c.p.skew = 64;
   c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0;
@@ -386,7 +395,7 @@ static void test_channel_lfo() {
 
   // Trapezoid / parabola stay inside the window and peak.
   for (int w = LFO_TRAPZ; w <= LFO_PARAB; w++) {
-    channels_init();
+    channels_init(DEFAULT_RATIO);
     c.p.mode = MODE_LFO; c.p.wave = w; c.p.skew = 128; c.p.cv_max = 5000;
     int lo = 999999, hi = -1;
     for (uint32_t t = 0; t < 256; t++) {
@@ -404,7 +413,7 @@ static void test_channel_lfo() {
 // woggle (Make Noise Wogglebug-style stepped/smooth/burst engine)
 // ---------------------------------------------------------------------------
 static void test_channel_woggle() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_WGGLE; c.p.ratio = 16; c.p.slew = 0; c.p.prob = 100;
   c.p.eucl_en = 0; c.p.cv_min = 0; c.p.cv_max = 4000;
@@ -507,7 +516,7 @@ static void test_storage() {
 // (Appended after the pre-existing suites so their RNG sequence is untouched.)
 // ---------------------------------------------------------------------------
 static void test_channel_off() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_OFF;
   drive(300);
@@ -518,7 +527,7 @@ static void test_channel_off() {
 }
 
 static void test_channel_ramp() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_RAMP; c.p.ratio = 16; c.p.skew = 128;
   c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
@@ -536,7 +545,7 @@ static void test_channel_ramp() {
 }
 
 static void test_channel_step_seq() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_STEP; c.p.ratio = 16; c.p.step_len = 4;
   c.p.steps[0] = 0; c.p.steps[1] = 85; c.p.steps[2] = 170; c.p.steps[3] = 255;
@@ -551,7 +560,7 @@ static void test_channel_step_seq() {
 }
 
 static void test_channel_sh() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_SH; c.p.ratio = 16;
   c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
@@ -567,7 +576,7 @@ static void test_channel_sh() {
 }
 
 static void test_channel_env() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_ENV; c.p.ratio = 16; c.p.env_a = 2; c.p.env_d = 2;  // 64+64 ticks
   c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
@@ -589,7 +598,7 @@ static void test_channel_env() {
 
 static void test_channel_logic() {
   // AND against a silent partner never opens.
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   channels[0].p.mode = MODE_OFF;
   Channel &b = channels[1];
   b.p.mode = MODE_LOGIC; b.p.ratio = 16; b.p.width = 64; b.p.logic_src = 1;
@@ -599,7 +608,7 @@ static void test_channel_logic() {
   for (uint32_t t = 0; t < 512; t++) { drive(1); if (b.gate_state) on_and++; }
   CHECK(on_and == 0);
   // OR against a silent partner equals the own window (64 ticks/cycle).
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   channels[0].p.mode = MODE_OFF;
   Channel &o = channels[1];
   o.p.mode = MODE_LOGIC; o.p.ratio = 16; o.p.width = 64; o.p.logic_src = 1;
@@ -612,7 +621,7 @@ static void test_channel_logic() {
 }
 
 static void test_channel_rwalk() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_RWALK; c.p.ratio = 16; c.p.width = 0;   // step of 1
   c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
@@ -633,13 +642,13 @@ static void test_channel_rwalk() {
 }
 
 static void test_channel_slew() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_LFO; c.p.ratio = 16; c.p.wave = LFO_SQR; c.p.skew = 128;
   c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0;
   drive(1);
   CHECK(c.out_mv == 5000);               // square opens high instantly
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &s = channels[0];
   s.p.mode = MODE_LFO; s.p.ratio = 16; s.p.wave = LFO_SQR; s.p.skew = 128;
   s.p.cv_min = 0; s.p.cv_max = 5000; s.p.slew = 16;
@@ -649,7 +658,7 @@ static void test_channel_slew() {
 }
 
 static void test_channel_gquant() {
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_RAMP; c.p.ratio = 16; c.p.skew = 128;
   c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
@@ -668,14 +677,14 @@ static void test_channel_gquant() {
 
 static void test_channel_cvmod() {
   auto run = [](uint8_t cv) {
-    channels_init();
+    channels_init(DEFAULT_RATIO);
     Channel &c = channels[0];
     c.p.mode = MODE_PULSE; c.p.ratio = 16; c.p.width = 64;
     c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
     c.p.cv_src1 = CVP_WIDTH; c.p.cv_scale1 = 4; c.p.cv_in1 = 0;  // CV1 -> width
     int on = 0;
     for (uint32_t t = 0; t < 512; t++) {
-      channels_update(96, cv, 0);
+      channels_update(96, cv, 0, {USER_SCALES});
       if (t >= 256 && c.gate_state) on++;
     }
     return on;
@@ -687,7 +696,7 @@ static void test_channel_cvmod() {
 
 static void test_channel_flex() {
   // Straight-grid baseline: 4 events, 64 ticks/cycle over 1024 ticks.
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_PULSE; c.p.ratio = 16; c.p.width = 64;
   c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
@@ -698,7 +707,7 @@ static void test_channel_flex() {
   CHECK(base_on == 256);
   // Every flex op keeps the engine bounded and gating (no crash, no stuck rail).
   for (uint8_t f = FLEX_HUMAN; f < FLEX_LAST; f++) {
-    channels_init();
+    channels_init(DEFAULT_RATIO);
     Channel &x = channels[0];
     x.p.mode = MODE_PULSE; x.p.ratio = 16; x.p.width = 64;
     x.p.cv_min = 0; x.p.cv_max = 5000; x.p.slew = 0; x.p.prob = 100; x.p.eucl_en = 0;
@@ -719,7 +728,7 @@ static void test_channel_flex() {
     CHECK(peak <= 5000);
   }
   // The rate warp provably bends time (accel stretches the open window).
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   Channel &a = channels[0];
   a.p.mode = MODE_PULSE; a.p.ratio = 16; a.p.width = 64;
   a.p.cv_min = 0; a.p.cv_max = 5000; a.p.slew = 0; a.p.prob = 100; a.p.eucl_en = 0;
@@ -728,6 +737,30 @@ static void test_channel_flex() {
   for (uint32_t t = 0; t < 1024; t++) { drive(1); if (a.gate_state) acc_on++; }
   CHECK(acc_on != base_on);
   suite_ok("channel: flex micro-timing");
+}
+
+static void test_engine_no_io() {
+  // Architectural pin: the engine computes but never touches the DAC.
+  // Outputs are only emitted through channels_take_outputs() + dac_write().
+  channels_init(DEFAULT_RATIO);
+  Channel &c = channels[0];
+  c.p.mode = MODE_PULSE; c.p.ratio = 16; c.p.width = 64;
+  c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+  mock_dac_mv[0] = 0xFFFF;             // sentinel: out of the 0..10000 range
+  channels_update(96, 128, 128, {USER_SCALES});
+  CHECK(c.out_mv == 5000);             // computed...
+  CHECK(mock_dac_mv[0] == 0xFFFF);     // ...but not emitted
+  uint16_t vals[NUM_OUTPUTS];
+  CHECK(channels_take_outputs(vals) & 1);
+  CHECK(vals[0] == 5000);
+  CHECK(channels_take_outputs(vals) == 0);   // drain clears the flags
+  // The mirrored flush (as in drive()/main.cpp) lands it on the DAC.
+  channels_update(96, 128, 128, {USER_SCALES});
+  uint8_t mask = channels_take_outputs(vals);
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++)
+    if (mask & (uint8_t)(1u << i)) dac_write(i, vals[i]);
+  CHECK(mock_dac_mv[0] == c.out_mv);
+  suite_ok("engine: no I/O without flush");
 }
 
 static void test_clock_tempo() {
@@ -765,7 +798,7 @@ static void test_blob_golden() {
   masterClock = MasterClock{};
   DEFAULT_RATIO = 6;
   USER_SCALES[0] = 0xFFF; USER_SCALES[1] = 0xAB5; USER_SCALES[2] = 0x5AD;
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   StoreBlob b;
   capture_state(b);
   CHECK(b.magic == 0x504B5731u);
@@ -810,7 +843,7 @@ static void test_storage_roundtrip() {
   masterClock.running = true; masterClock.swing = 0;
   DEFAULT_RATIO = 6;
   USER_SCALES[0] = 0; USER_SCALES[1] = 0; USER_SCALES[2] = 0;
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   StoreBlob loaded;
   CHECK(storage_load(SLOT_ACTIVE, loaded));
   restore_state(loaded);
@@ -861,6 +894,7 @@ int main() {
   test_channel_gquant();
   test_channel_cvmod();
   test_channel_flex();
+  test_engine_no_io();
   test_clock_tempo();
   test_blob_golden();
   test_storage_roundtrip();

@@ -69,6 +69,6 @@ void storage_save(StoreSlot slot, const StoreBlob &blob) {
 
 void storage_init() {
   StoreBlob blob;
-  channels_init();
+  channels_init(DEFAULT_RATIO);
   if (storage_load(SLOT_ACTIVE, blob)) restore_state(blob);
 }

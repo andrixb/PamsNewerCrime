@@ -1,7 +1,8 @@
 #include "app/channel.h"
 #include "domain/euclid.h"
-#include "infra/dac.h"
 #include <string.h>
+
+static_assert(NUM_OUTPUTS <= 8, "dirty mask in channels_take_outputs is 8 bits");
 
 Channel channels[NUM_OUTPUTS];
 
@@ -72,11 +73,11 @@ static void apply_cv(ChannelParams &p, uint8_t src, int8_t scale, int val) {
   }
 }
 
-void channels_init() {
+void channels_init(uint8_t default_ratio) {
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     Channel &c = channels[i];
     memset(&c.p, 0, sizeof(c.p));
-    c.p.ratio = DEFAULT_RATIO < RATIO_COUNT ? DEFAULT_RATIO : 6;
+    c.p.ratio = default_ratio < RATIO_COUNT ? default_ratio : 6;
     c.p.mode = MODE_PULSE;
     c.p.width = 64;
     c.p.skew = 128;
@@ -115,8 +116,21 @@ void channels_reset() {
     c.ev_off = 0;
     c.pend = 0;
     c.rate256 = 256;
-    dac_write(i, 0);
+    c.out_dirty = 1;   // hardware must re-assert every output (was dac_write(i, 0))
   }
+}
+
+uint8_t channels_take_outputs(uint16_t out_mv[NUM_OUTPUTS]) {
+  uint8_t mask = 0;
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
+    Channel &c = channels[i];
+    if (c.out_dirty) {
+      mask |= (uint8_t)(1u << i);
+      out_mv[i] = c.out_mv;
+      c.out_dirty = 0;
+    }
+  }
+  return mask;
 }
 
 void channel_rebuild_euclid(Channel &c) {
@@ -190,13 +204,14 @@ static int32_t scaled(const ChannelParams &p, uint16_t frac) {
   return constrain(v, 0, DAC_MAX_MV);
 }
 
-void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
+void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
+                     const EngineEnv &env) {
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     Channel &c = channels[i];
     ChannelParams p = c.p;
 
     if (p.mode == MODE_OFF) {
-      if (c.out_mv) { c.out_mv = 0; dac_write(i, 0); }
+      if (c.out_mv) { c.out_mv = 0; c.out_dirty = 1; }
       c.gate_state = 0;
       c.pos_x256 += delta_x256;
       continue;
@@ -320,7 +335,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
         uint32_t st = span / 83;
         if (st < 1) st = 1;
         int pos = (int)((st * ph256) >> 8);
-        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT));
+        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales));
         frac = (uint16_t)((uint32_t)q * 2048 / st);
         if (frac > 2048) frac = 2048;
         uint8_t note = q > 255 ? 255 : (uint8_t)q;
@@ -340,7 +355,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
 #endif
         rv = constrain(rv, 0, 255);
         int pos = (int)((uint32_t)rv * st / 255);
-        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT));
+        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales));
         frac = (uint16_t)((uint32_t)q * 2048 / st);
         if (frac > 2048) frac = 2048;
         uint8_t note = q > 255 ? 255 : (uint8_t)q;
@@ -459,7 +474,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
       uint32_t st = span / 83;
       if (st < 1) st = 1;
       int semis = (int)(((uint32_t)(mv > p.cv_min ? mv - p.cv_min : 0) * st) / (span ? span : 1));
-      int q = quantize_semi(semis, scale_mask(p.scale));
+      int q = quantize_semi(semis, scale_mask(p.scale, env.user_scales));
       int32_t m = (int32_t)q * 83;
       if (m > p.cv_max - p.cv_min) m = p.cv_max - p.cv_min;
       mv = (uint16_t)(p.cv_min + m);
@@ -473,6 +488,6 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2) {
       c.filt_mv = mv;
     }
     c.out_mv = mv;
-    dac_write(i, mv);
+    c.out_dirty = 1;   // emitted by the caller via channels_take_outputs()
   }
 }

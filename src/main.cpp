@@ -32,7 +32,14 @@ static void control_tick() {
   }
   masterClock.tick();
   uint32_t delta = masterClock.take_delta();
-  channels_update(delta, cv1_f >> 4, cv2_f >> 4);
+  // App computes (no I/O); infra emits. The env carries the globals the
+  // engine needs instead of it reading them itself.
+  const EngineEnv env = { USER_SCALES };
+  channels_update(delta, cv1_f >> 4, cv2_f >> 4, env);
+  uint16_t outs[NUM_OUTPUTS];
+  uint8_t dirty = channels_take_outputs(outs);
+  for (uint8_t i = 0; i < NUM_OUTPUTS; i++)
+    if (dirty & (uint8_t)(1u << i)) dac_write(i, outs[i]);
 }
 
 static void autosave() {

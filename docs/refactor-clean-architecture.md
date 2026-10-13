@@ -7,7 +7,8 @@ infrastructure) with one-way dependencies, without changing runtime behavior.
 
 - [x] Phase 0 — safety net (`make test`: 1676 checks, 0 failures; golden `StoreBlob` test)
 - [x] Phase 1 — directory split (`src/domain|app|infra`, src-rooted includes, `make test` + `build40` + `build41` green)
-- [ ] Phase 2 — decouple the engine
+- [x] Phase 2 — decouple the engine (no `dac.h` in app; drained outputs;
+  explicit `EngineEnv`/`default_ratio`; `make test` + `build40` + `build41` green)
 - [ ] Phase 3 — storage split
 - [ ] Phase 4 — split ui.cpp
 - [ ] Phase 5 — composition root + verification
