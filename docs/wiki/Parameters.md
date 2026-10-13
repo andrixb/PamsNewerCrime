@@ -58,7 +58,7 @@ Two independent modulation chains, A and B:
 | Param | Values | Meaning |
 |-------|--------|---------|
 | `cv1 from` / `cv2 from` | `CV1`, `CV2`, `out1…out4` | Which voltage this chain reads. |
-| `cv in 1` / `cv in 2` | `--`, `range`, `width`, `phase`, `delay`, `prob`, `ratio`, `div`, `skew`, `attack`, `decay`, `slew` | Which parameter it modulates. |
+| `cv in 1` / `cv in 2` | `--`, `range`, `width`, `phase`, `delay`, `prob`, `ratio`, `div`, `skew`, `attack`, `decay`, `slew`, `smooth`, `burst` | Which parameter it modulates. |
 | `cv1 scale` / `cv2 scale` | −128…+127 | Bipolar depth & direction. |
 
 See [CV Modulation](CV-Modulation.md).
@@ -69,10 +69,12 @@ Only the parameters for the **current** app appear here.
 
 | Param | Apps | Range | Meaning |
 |-------|------|-------|---------|
-| `width` | pulse, logic, woggle, rwalk, div, ratch | 0–255 | pulse/logic/div/ratch: gate length (% of cycle). woggle: speed. rwalk: step size. |
+| `width` | pulse, logic, woggle, rwalk, div, ratch | 0–255 | pulse/logic/div/ratch: gate length (% of cycle). woggle: chase speed (how fast the output catches the smooth value). rwalk: step size. |
 | `delay` | pulse, logic, div, ratch | 0–255 | Offset after the event before the gate starts. |
 | `wave` | LFO | sine/tri/saw/sqr/trapz/parab | Waveform. |
-| `skew` | LFO, ramp, woggle | 0–255 | LFO: shape (tri rise point / sqr width / trapz ramp). ramp: turn-around. woggle: chaos. |
+| `skew` | LFO, ramp, woggle | 0–255 | LFO: shape (tri rise point / sqr width / trapz ramp). ramp: turn-around. woggle: chaos (chance a new stepped value is taken per event). |
+| `smooth` | woggle | 0–255 | Lag on the stepped value: 0 = hard steps, 255 = slow glide. |
+| `burst` | woggle | 0–255 | Chance of a random clock-synced trigger gate on each event. |
 | `seq len` | step | 1–16 | Number of active steps. |
 | `step 1…N` | step | 0–255 | Value at that step (across the output's `cv min`..`cv max`). |
 | `s1 prob…s16 prob` | step | 0–100 % | Per-step trigger probability (a failed step is skipped: index advances, value holds). |

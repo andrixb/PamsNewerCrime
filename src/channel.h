@@ -92,6 +92,8 @@ enum CvParam : uint8_t {
   CVP_ATK,
   CVP_DEC,
   CVP_SLEW,
+  CVP_SMOOTH,
+  CVP_BURST,
   CVP_LAST
 };
 
@@ -136,6 +138,8 @@ struct ChannelParams {
   uint8_t flex;      // FlexOp micro-timing (0=none)
   uint8_t flex_amt;  // flex intensity 0..255
   uint8_t gquant;    // global quantise post-filter: snap final value to `scale`
+  uint8_t smooth;    // woggle: lag on the stepped value (S&H -> smooth out)
+  uint8_t burst;     // woggle: chance of a random gate per clock event
 };
 
 struct Channel {
@@ -150,7 +154,8 @@ struct Channel {
   uint16_t env_t;    // envelope ms counter
   uint16_t filt_mv;  // slew filter state
   int16_t wv;        // woggle / random-walk value 0..255
-  int8_t dir;        // woggle direction
+  uint8_t wtar;      // woggle: stepped random target
+  uint8_t wsm;       // woggle: smoothed value (chased by wv)
   uint8_t last_note; // note mode: last quantized semitone for gate detection
   uint16_t hold_mv;  // cross-op hold/s&h storage
   uint8_t x_hi;      // cross-op: source was high last tick (edge detect)

@@ -400,6 +400,57 @@ static void test_channel_lfo() {
 }
 
 // ---------------------------------------------------------------------------
+// woggle (Make Noise Wogglebug-style stepped/smooth/burst engine)
+// ---------------------------------------------------------------------------
+static void test_channel_woggle() {
+  channels_init();
+  Channel &c = channels[0];
+  c.p.mode = MODE_WGGLE; c.p.ratio = 16; c.p.slew = 0; c.p.prob = 100;
+  c.p.eucl_en = 0; c.p.cv_min = 0; c.p.cv_max = 4000;
+  c.p.skew = 0; c.p.smooth = 255; c.p.burst = 0; c.p.width = 255;
+
+  // skew 0: the stepped target never re-rolls, so everything is frozen.
+  drive(600);
+  uint8_t frozen = c.wtar;
+  drive(600);
+  CHECK(c.wtar == frozen);
+  CHECK(c.wv == frozen);
+
+  // skew 255 + burst 255: new stepped value AND a gate on every event.
+  // smooth 255 -> slow glide, so the smoothed value is caught mid-flight.
+  c.p.skew = 255; c.p.burst = 255;
+  int glide = 0, gated = 0;
+  for (uint32_t t = 0; t < 600; t++) {
+    drive(1);
+    if (c.gate_state) gated++;
+    if (c.wsm != c.wtar) glide++;
+  }
+  CHECK(c.wtar != frozen);
+  CHECK(glide > 100);               // slow smooth lag between events
+  CHECK(gated > 0);                 // burst gates fired
+
+  // smooth 0 -> instant snap: smoothed value always equals the target.
+  c.p.smooth = 0; c.p.burst = 0;
+  int mid = 0, gated0 = 0;
+  for (uint32_t t = 0; t < 600; t++) {
+    drive(1);
+    if (c.wsm != c.wtar) mid++;
+    if (c.gate_state) gated0++;
+  }
+  CHECK(mid == 0);
+  CHECK(gated0 == 0);               // burst 0: gate never opens
+
+  // width slow (1 unit/tick): the woggle output chases the smooth value for
+  // many ticks between events instead of arriving at once.
+  c.p.width = 1;
+  int chase = 0;
+  for (uint32_t t = 0; t < 1600; t++) { drive(1); if (c.wv != c.wsm) chase++; }
+  CHECK(chase > 250);
+  CHECK(c.out_mv <= 4000);          // stays inside the cv window
+  suite_ok("channel: woggle");
+}
+
+// ---------------------------------------------------------------------------
 // storage
 // ---------------------------------------------------------------------------
 static void test_storage() {
@@ -463,6 +514,7 @@ int main() {
   test_channel_crossop();
   test_channel_quant_app();
   test_channel_lfo();
+  test_channel_woggle();
   test_storage();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;

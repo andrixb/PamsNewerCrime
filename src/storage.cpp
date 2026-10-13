@@ -4,7 +4,7 @@
 #include <string.h>
 
 #define STORE_MAGIC   0x504B5731u
-#define STORE_VERSION 9u
+#define STORE_VERSION 10u
 
 static const uint32_t SLOT_STRIDE = 512;
 static const uint32_t SLOT_OFFSET[3] = { 0, SLOT_STRIDE, 2 * SLOT_STRIDE };

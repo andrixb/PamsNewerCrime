@@ -96,7 +96,7 @@ extern Channel channels[NUM_OUTPUTS];
 
 static const char *MODE_NAMES[] = { "off", "pulse", "LFO", "ramp", "step", "S&H", "note", "env", "logic", "woggle", "rwalk", "div", "quant", "ratch" };
 static const char *WAVE_NAMES[] = { "sin", "tri", "saw", "sqr", "trapz", "parab" };
-static const char *CVP_NAMES[]  = { "--", "range", "width", "phase", "delay", "prob", "ratio", "div", "skew", "attack", "decay", "slew" };
+static const char *CVP_NAMES[]  = { "--", "range", "width", "phase", "delay", "prob", "ratio", "div", "skew", "attack", "decay", "slew", "smooth", "burst" };
 static const char *SCALE_NAMES[] = { "chro", "major", "minor", "dorian", "phryg", "lydian", "mixolyd", "harm", "penta", "pentmn", "blues", "whole", "melmin", "harmaj", "dor#4", "phrdom", "loc", "alter", "lyddom", "dblharm", "enigm", "hiraj", "in", "iwato", "prom", "triton", "dim", "aug", "blsmaj", "user1", "user2", "user3" };
 static const char *LOGIC_NAMES[] = { "--", "and", "or", "xor", "nand", "nor" };
 static const char *XOP_NAMES[] = { "--", "mix", "mask", "not", "mult", "hold", "s&h", "add", "sub", "and", "or", "xor", "seed" };
@@ -147,7 +147,9 @@ static const char *SYS_ACTIONS[] = { "save bank A", "save bank B", "load bank A"
 #define P_EULOOP 52
 #define P_SPROB0 53   // +16 per-step probabilities
 #define P_GQ 69
-#define CH_PARAM_COUNT 70
+#define P_SMOOTH 70
+#define P_BURST 71
+#define CH_PARAM_COUNT 72
 
 #define MASTER_PARAM_COUNT 5
 
@@ -216,7 +218,7 @@ static const uint8_t* shape_arr(uint8_t mode) {
     case MODE_NOTE:  { static const uint8_t v[] = { P_SCALE, 0xFF };           return v; }
     case MODE_ENV:   { static const uint8_t v[] = { P_ENV_A, P_ENV_D, 0xFF };  return v; }
     case MODE_LOGIC: { static const uint8_t v[] = { P_LGOP, P_LGSRC, P_WIDTH, P_DELAY, 0xFF }; return v; }
-    case MODE_WGGLE: { static const uint8_t v[] = { P_WIDTH, P_SKEW, 0xFF };   return v; }
+    case MODE_WGGLE: { static const uint8_t v[] = { P_WIDTH, P_SKEW, P_SMOOTH, P_BURST, 0xFF }; return v; }
     case MODE_RWALK: { static const uint8_t v[] = { P_WIDTH, 0xFF };           return v; }
     case MODE_DIV:   { static const uint8_t v[] = { P_DIVA, P_DIVB, P_WIDTH, P_DELAY, 0xFF }; return v; }
     case MODE_QUANT: { static const uint8_t v[] = { P_QSRC, P_SCALE, 0xFF };   return v; }
@@ -452,6 +454,8 @@ static int16_t get_val(uint8_t ch, uint8_t idx) {
     case P_FLEXA: return p.flex_amt;
     case P_RCH: return p.ratchets;
     case P_GQ: return p.gquant;
+    case P_SMOOTH: return p.smooth;
+    case P_BURST: return p.burst;
     default: return p.cv_scale2;
   }
 }
@@ -518,6 +522,8 @@ static void set_val(uint8_t ch, uint8_t idx, int32_t v) {
     case P_FLEXA: p.flex_amt = constrain(v, 0, 255); break;
     case P_RCH: p.ratchets = constrain(v, 1, 16); break;
     case P_GQ: p.gquant = v ? 1 : 0; break;
+    case P_SMOOTH: p.smooth = constrain(v, 0, 255); break;
+    case P_BURST: p.burst = constrain(v, 0, 255); break;
     default: p.cv_scale2 = constrain(v, -128, 127); break;
   }
   if (touch_euclid) channel_rebuild_euclid(channels[ch]);
@@ -582,6 +588,8 @@ static const char *label_of(uint8_t ch, uint8_t idx) {
     case P_FLEXA: return "flex amt";
     case P_RCH: return "ratchets";
     case P_GQ: return "quantise";
+    case P_SMOOTH: return "smooth";
+    case P_BURST: return "burst";
     default: return "cv2 scale";
   }
 }
