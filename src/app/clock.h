@@ -27,7 +27,12 @@ private:
   volatile uint32_t ext_pulses = 0;
   uint32_t consumed_pulses = 0;
   volatile uint32_t ext_last_pulse_us = 0;  // time of the most recent external pulse
-  volatile float ext_avg_us = 0;            // smoothed pulse-to-pulse period
+  static constexpr uint8_t EXT_DT_HIST = 4;
+  volatile uint32_t ext_dt_hist[EXT_DT_HIST] = {0};
+  volatile uint8_t ext_dt_head = 0;
+  volatile uint8_t ext_dt_count = 0;
+  volatile uint32_t ext_dt_sum = 0;
+  volatile float ext_avg_us = 0;            // rolling average of the last EXT_DT_HIST pulse intervals
   uint16_t ext_bpm_cent = 0;
 };
 

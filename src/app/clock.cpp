@@ -25,10 +25,19 @@ void MasterClock::pulse_external() {
   uint32_t dt = now - prev;
   if (dt < 100) return;                    // ignore sub-100us glitches / runaway edges
 
-  if (ext_avg_us <= 0.0f || dt > (uint32_t)(ext_avg_us * 4.0f))
-    ext_avg_us = (float)dt;                // lock to a new tempo immediately
-  else
-    ext_avg_us = ext_avg_us * 0.85f + (float)dt * 0.15f;
+  // Rolling average of the last EXT_DT_HIST intervals. This follows tempo
+  // changes in just a few pulses while still smoothing jittery clocks.
+  if (ext_dt_count < EXT_DT_HIST) {
+    ext_dt_hist[ext_dt_head] = dt;
+    ext_dt_sum += dt;
+    ext_dt_count++;
+  } else {
+    uint32_t old_dt = ext_dt_hist[ext_dt_head];
+    ext_dt_sum = ext_dt_sum + dt - old_dt;
+    ext_dt_hist[ext_dt_head] = dt;
+  }
+  ext_dt_head = (ext_dt_head + 1) % EXT_DT_HIST;
+  ext_avg_us = (float)ext_dt_sum / (float)ext_dt_count;
 }
 
 void MasterClock::reset_phase() {
@@ -36,6 +45,10 @@ void MasterClock::reset_phase() {
   raw_beat = 0;
   consumed_pulses = ext_pulses;
   ext_last_pulse_us = 0;
+  for (uint8_t i = 0; i < EXT_DT_HIST; i++) ext_dt_hist[i] = 0;
+  ext_dt_head = 0;
+  ext_dt_count = 0;
+  ext_dt_sum = 0;
   ext_avg_us = 0;
   ext_bpm_cent = 0;
 }

@@ -220,6 +220,28 @@ static void test_clock_external() {
   }
   CHECK(masterClock.measured_bpm_cent() >= 11900 && masterClock.measured_bpm_cent() <= 12100);
 
+  // Sudden tempo change: rolling average locks to the new tempo in a few pulses.
+  masterClock = MasterClock{};
+  masterClock.source = 1;
+  masterClock.ext_ppqn = 24;
+  masterClock.reset_phase();
+  mock_time_us = 0;
+  for (int i = 0; i < 24; i++) {
+    mock_time_us += period_120_24;
+    masterClock.pulse_external();
+    masterClock.tick();
+    (void)masterClock.take_delta();
+  }
+  CHECK(masterClock.measured_bpm_cent() >= 11950 && masterClock.measured_bpm_cent() <= 12050);
+  const uint32_t period_240_24 = 60000000u / (240u * 24u);  // 10417us
+  for (int i = 0; i < 8; i++) {
+    mock_time_us += period_240_24;
+    masterClock.pulse_external();
+    masterClock.tick();
+    (void)masterClock.take_delta();
+  }
+  CHECK(masterClock.measured_bpm_cent() >= 23900 && masterClock.measured_bpm_cent() <= 24100);
+
   // Timeout: after >4x the average period without a pulse the estimator clears.
   masterClock = MasterClock{};
   masterClock.source = 1;
