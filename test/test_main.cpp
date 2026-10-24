@@ -171,6 +171,76 @@ static void test_clock() {
 }
 
 // ---------------------------------------------------------------------------
+// external clock: period estimator, tempo read-out and timeout
+// ---------------------------------------------------------------------------
+static void test_clock_external() {
+  const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+
+  // 120 BPM at 24 PPQN -> 20833us pulse period.
+  masterClock = MasterClock{};
+  masterClock.source = 1;
+  masterClock.ext_ppqn = 24;
+  masterClock.reset_phase();
+  mock_time_us = 1000000;
+  const uint32_t period_120_24 = 60000000u / (120u * 24u);  // 20833us
+
+  uint32_t total_delta = 0;
+  for (int i = 0; i < 100; i++) {
+    mock_time_us += period_120_24;
+    masterClock.pulse_external();
+    masterClock.tick();
+    total_delta += masterClock.take_delta();
+  }
+  CHECK(total_delta == 100u * (QT / 24));
+  uint16_t bpm = masterClock.measured_bpm_cent();
+  CHECK(bpm >= 11950 && bpm <= 12050);
+
+  // First pulse advances phase even before the tempo estimator has an interval.
+  masterClock = MasterClock{};
+  masterClock.source = 1;
+  masterClock.ext_ppqn = 24;
+  masterClock.reset_phase();
+  mock_time_us = 1000000;
+  masterClock.pulse_external();
+  masterClock.tick();
+  CHECK(masterClock.take_delta() == QT / 24);
+  CHECK(masterClock.measured_bpm_cent() == 0);
+
+  // 1 PPQN clock: each pulse is one quarter, derived tempo still 120 BPM.
+  masterClock = MasterClock{};
+  masterClock.source = 1;
+  masterClock.ext_ppqn = 1;
+  masterClock.reset_phase();
+  mock_time_us = 0;
+  for (int i = 0; i < 8; i++) {
+    mock_time_us += 500000u;      // 500ms per quarter
+    masterClock.pulse_external();
+    masterClock.tick();
+    CHECK(masterClock.take_delta() == QT);
+  }
+  CHECK(masterClock.measured_bpm_cent() >= 11900 && masterClock.measured_bpm_cent() <= 12100);
+
+  // Timeout: after >4x the average period without a pulse the estimator clears.
+  masterClock = MasterClock{};
+  masterClock.source = 1;
+  masterClock.ext_ppqn = 24;
+  masterClock.reset_phase();
+  mock_time_us = 0;
+  for (int i = 0; i < 20; i++) {
+    mock_time_us += period_120_24;
+    masterClock.pulse_external();
+    masterClock.tick();
+    (void)masterClock.take_delta();
+  }
+  CHECK(masterClock.measured_bpm_cent() > 0);
+  mock_time_us += 100000u;        // > 4 * ~20833us
+  masterClock.tick();
+  CHECK(masterClock.measured_bpm_cent() == 0);
+
+  suite_ok("clock: external sync");
+}
+
+// ---------------------------------------------------------------------------
 // channel engine
 // ---------------------------------------------------------------------------
 static void drive(uint32_t ticks, uint32_t delta = 96, uint8_t cv1 = 128, uint8_t cv2 = 128) {
@@ -971,6 +1041,7 @@ static void test_storage_roundtrip() {
 int main() {
   test_euclid();
   test_clock();
+  test_clock_external();
   test_channel_pulse();
   test_channel_div();
   test_channel_note();

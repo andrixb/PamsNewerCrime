@@ -26,8 +26,8 @@ private:
   uint32_t raw_beat = 0;   // un-warped phase within the current quarter (x256)
   volatile uint32_t ext_pulses = 0;
   uint32_t consumed_pulses = 0;
-  uint64_t ext_last_us = 0;
-  float ext_avg_us = 0;
+  volatile uint32_t ext_last_pulse_us = 0;  // time of the most recent external pulse
+  volatile float ext_avg_us = 0;            // smoothed pulse-to-pulse period
   uint16_t ext_bpm_cent = 0;
 };
 
