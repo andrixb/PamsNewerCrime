@@ -1,5 +1,7 @@
 #pragma once
-#include <Arduino.h>
+// Domain: pure patch vocabulary (modes, params). No hardware, no engine
+// state, no I/O. Moved verbatim from channel.h (Phase 1).
+#include <stdint.h>
 #include "pam_config.h"
 
 enum OutMode : uint8_t {
@@ -61,23 +63,6 @@ enum FlexOp : uint8_t {
 };
 
 enum LfWave : uint8_t { LFO_SINE = 0, LFO_TRI, LFO_SAW, LFO_SQR, LFO_TRAPZ, LFO_PARAB, LFO_LAST };
-
-struct Ratio {
-  const char *label;
-  uint32_t period_x256;
-};
-
-extern const Ratio RATIO_TABLE[];
-extern const uint8_t RATIO_COUNT;
-extern const uint8_t SCALE_COUNT;
-
-#define USER_SCALE_COUNT 3
-extern uint16_t USER_SCALES[USER_SCALE_COUNT];
-uint16_t scale_mask(uint8_t idx);
-
-// Default ratio applied to every channel by channels_init() (the "defaults"
-// SYS action). Set from the SYS page, persisted with the patch.
-extern uint8_t DEFAULT_RATIO;
 
 enum CvParam : uint8_t {
   CVP_NONE = 0,
@@ -141,33 +126,3 @@ struct ChannelParams {
   uint8_t smooth;    // woggle: lag on the stepped value (S&H -> smooth out)
   uint8_t burst;     // woggle: chance of a random gate per clock event
 };
-
-struct Channel {
-  ChannelParams p;
-  uint32_t pos_x256;
-  uint32_t event_count;
-  uint32_t mask;
-  uint16_t out_mv;
-  uint8_t gate_state;
-  uint8_t step_idx;
-  uint8_t sh_val;
-  uint16_t env_t;    // envelope ms counter
-  uint16_t filt_mv;  // slew filter state
-  int16_t wv;        // woggle / random-walk value 0..255
-  uint8_t wtar;      // woggle: stepped random target
-  uint8_t wsm;       // woggle: smoothed value (chased by wv)
-  uint8_t last_note; // note mode: last quantized semitone for gate detection
-  uint16_t hold_mv;  // cross-op hold/s&h storage
-  uint8_t x_hi;      // cross-op: source was high last tick (edge detect)
-  uint16_t ev_off;   // flex: pending fire offset (256ths of cycle)
-  uint8_t pend;      // flex: delayed fire pending
-  uint16_t rate256;  // flex: accel rate multiplier (256 = 1x)
-};
-
-extern Channel channels[NUM_OUTPUTS];
-
-void channels_init();
-void channels_reset();
-void channel_rebuild_euclid(Channel &c);
-void channels_update(uint32_t master_delta_x256, uint8_t cv1, uint8_t cv2);
-uint16_t channel_value(const Channel &c);

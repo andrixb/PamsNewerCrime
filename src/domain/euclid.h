@@ -1,4 +1,4 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
 
 void euclid(int ones, int total, uint8_t *out);

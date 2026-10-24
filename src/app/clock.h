@@ -1,5 +1,5 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
 #include "pam_config.h"
 
 class MasterClock {
@@ -13,7 +13,6 @@ public:
   // sample-accurate to the nominal tempo (internal source only).
   uint8_t swing = 0;
 
-  void begin();
   void tick();
   void pulse_external();
   void reset_phase();
@@ -27,9 +26,14 @@ private:
   uint32_t raw_beat = 0;   // un-warped phase within the current quarter (x256)
   volatile uint32_t ext_pulses = 0;
   uint32_t consumed_pulses = 0;
-  uint64_t ext_last_us = 0;
-  float ext_avg_us = 0;
+  volatile uint32_t ext_last_pulse_us = 0;  // time of the most recent external pulse
+  volatile float ext_avg_us = 0;            // smoothed pulse-to-pulse period
   uint16_t ext_bpm_cent = 0;
 };
 
 extern MasterClock masterClock;
+
+// Time port for the external-sync path (timeout + tempo measurement).
+// Declared here, provided by the composition root / test harness:
+// firmware returns micros(), native tests return their mock clock.
+uint32_t clock_now_us();
