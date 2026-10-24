@@ -24,6 +24,7 @@ struct Channel {
   uint16_t ev_off;   // flex: pending fire offset (256ths of cycle)
   uint8_t pend;      // flex: delayed fire pending
   uint16_t rate256;  // flex: accel rate multiplier (256 = 1x)
+  uint32_t gate_rem; // external-source gate timer (ticks remaining high)
   uint8_t out_dirty; // output stage: set when out_mv needs a DAC write
 };
 
@@ -34,6 +35,8 @@ extern Channel channels[NUM_OUTPUTS];
 // (normally USER_SCALES); the engine never reads that global directly.
 struct EngineEnv {
   const uint16_t *user_scales;
+  uint16_t bpm_cent = 0; // effective tempo (internal setpoint or measured external)
+  uint8_t source = 0;    // 0 = internal, 1 = external
 };
 
 void channels_init(uint8_t default_ratio);

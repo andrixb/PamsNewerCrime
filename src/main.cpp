@@ -26,7 +26,10 @@ static void control_tick() {
   uint32_t delta = masterClock.take_delta();
   // App computes (no I/O); infra emits. The env carries the globals the
   // engine needs instead of it reading them itself.
-  const EngineEnv env = { USER_SCALES };
+  const EngineEnv env = { USER_SCALES,
+                          masterClock.source ? masterClock.measured_bpm_cent()
+                                             : masterClock.bpm_cent,
+                          masterClock.source };
   channels_update(delta, hal_input_cv1(), hal_input_cv2(), env);
   uint16_t outs[NUM_OUTPUTS];
   uint8_t dirty = channels_take_outputs(outs);

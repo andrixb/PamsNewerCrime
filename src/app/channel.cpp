@@ -116,6 +116,7 @@ void channels_reset() {
     c.ev_off = 0;
     c.pend = 0;
     c.rate256 = 256;
+    c.gate_rem = 0;
     c.out_dirty = 1;   // hardware must re-assert every output (was dac_write(i, 0))
   }
 }
@@ -222,6 +223,21 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
 
     uint32_t period = p.mode == MODE_DIV ? div_period(p)
                                          : RATIO_TABLE[p.ratio].period_x256;
+
+    // External source: pulse/div gates are timed from the measured tempo
+    // because delta is only applied on input pulses, so phase does not advance
+    // between events and the normal windowed gate would stay high.
+    uint32_t gate_ticks = 0;
+    if (env.source == 1 && env.bpm_cent > 0 &&
+        (p.mode == MODE_PULSE || p.mode == MODE_DIV)) {
+      const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+      uint32_t quarter_ms = 6000000u / env.bpm_cent;
+      uint32_t output_ms = (uint32_t)((uint64_t)quarter_ms * period / QT);
+      uint32_t gate_ms = (uint32_t)((uint64_t)output_ms * p.width / 256);
+      if (gate_ms == 0) gate_ms = 1;
+      gate_ticks = gate_ms;
+    }
+
     uint32_t phase_off = (uint32_t)p.phase * period / 256;
 
     // --- FLEX micro-timing, offset part: human + swing shift the gate start ---
@@ -432,6 +448,22 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
       }
       default:
         break;
+    }
+
+    // For external clocks the phase only advances on input pulses, so a simple
+    // windowed gate would stay high for ratios where delta is a multiple of the
+    // channel period (e.g. 1/4 at 1 PPQN). Use a tempo-derived timer instead.
+    if (env.source == 1 && (p.mode == MODE_PULSE || p.mode == MODE_DIV)) {
+      if (fire && gate_ticks > 0) {
+        c.gate_state = 1;
+        c.gate_rem = gate_ticks;
+      } else if (c.gate_rem > 0) {
+        c.gate_rem--;
+        if (c.gate_rem == 0) c.gate_state = 0;
+      } else if (gate_ticks > 0) {
+        c.gate_state = 0;
+      }
+      frac = c.gate_state ? 2048 : 0;
     }
 
     uint16_t mv = scaled(p, frac);
