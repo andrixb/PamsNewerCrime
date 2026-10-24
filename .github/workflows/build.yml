@@ -71,5 +71,4 @@ jobs:
             --base "$DEFAULT_BRANCH" \
             --head "$branch" \
             --title "CI: publish ${{ github.ref_name }} hexes for web flasher" \
-            --body "Auto-generated firmware binaries for the web flasher." \
-            --label "ci"
+            --body "Auto-generated firmware binaries for the web flasher."
