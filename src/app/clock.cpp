@@ -118,7 +118,9 @@ void MasterClock::tick() {
 
     if (ext_avg_us > 200.0f) {
       float beats = ext_avg_us / 1e6f * ppqn;
-      ext_bpm_cent = (uint16_t)constrain(60.0f * 100.0f / beats, BPM_MIN, BPM_MAX);
+      // Allow the measured read-out to go lower than the internal engine minimum
+      // so very slow external clocks still display their real tempo.
+      ext_bpm_cent = (uint16_t)constrain(60.0f * 100.0f / beats, 100, BPM_MAX);
     }
   }
 }
