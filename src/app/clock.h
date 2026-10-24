@@ -19,10 +19,6 @@ public:
   uint32_t take_delta();
   uint16_t measured_bpm_cent() const { return ext_bpm_cent; }
   uint32_t measured_period_us() const { return (uint32_t)ext_avg_us; }
-  uint32_t pulse_count() const { return ext_pulses; }
-  uint32_t consumed_count() const { return consumed_pulses; }
-  uint32_t debug_newp() const { return debug_last_newp; }
-  uint32_t debug_delta_added() const { return debug_last_delta_added; }
   bool external_active() const { return source == 1; }
 
 private:
@@ -39,9 +35,6 @@ private:
   volatile uint32_t ext_dt_sum = 0;
   volatile float ext_avg_us = 0;            // rolling average of the last EXT_DT_HIST pulse intervals
   uint16_t ext_bpm_cent = 0;
-  // Debug: last values produced by the external-sync path.
-  uint32_t debug_last_newp = 0;
-  uint32_t debug_last_delta_added = 0;
 };
 
 extern MasterClock masterClock;
