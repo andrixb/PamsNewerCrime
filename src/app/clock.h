@@ -18,6 +18,7 @@ public:
   void reset_phase();
   uint32_t take_delta();
   uint16_t measured_bpm_cent() const { return ext_bpm_cent; }
+  uint32_t measured_period_us() const { return (uint32_t)ext_avg_us; }
   bool external_active() const { return source == 1; }
 
 private:
