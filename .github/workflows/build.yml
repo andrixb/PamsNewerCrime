@@ -71,4 +71,5 @@ jobs:
             --base "$DEFAULT_BRANCH" \
             --head "$branch" \
             --title "CI: publish ${{ github.ref_name }} hexes for web flasher" \
-            --body "Auto-generated firmware binaries for the web flasher."
+            --body "Auto-generated firmware binaries for the web flasher." \
+            || echo "::warning::Could not create PR automatically. Open it manually at https://github.com/${{ github.repository }}/pull/new/$branch"
