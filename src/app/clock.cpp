@@ -98,12 +98,14 @@ void MasterClock::tick() {
   } else {
     uint32_t pulses = ext_pulses;
     uint32_t newp = pulses - consumed_pulses;
+    debug_last_newp = newp;
     if (!newp) {
       if (ext_avg_us > 0.0f) {
         uint32_t now = clock_now_us();
         uint32_t gap = now - ext_last_pulse_us;
         if (gap > (uint32_t)(ext_avg_us * 4.0f)) { ext_avg_us = 0.0f; ext_bpm_cent = 0; }
       }
+      debug_last_delta_added = 0;
       return;
     }
     consumed_pulses = pulses;
@@ -111,10 +113,12 @@ void MasterClock::tick() {
     uint8_t ppqn = constrain(ext_ppqn, 1, 48);
     uint32_t t256 = (uint32_t)TICKS_PER_QUARTER * 256 / ppqn;
     uint32_t frac = (uint32_t)TICKS_PER_QUARTER * 256 - t256 * ppqn;
-    delta_x256 += newp * t256;
+    uint32_t added = newp * t256;
+    delta_x256 += added;
     frac_acc += (uint64_t)newp * frac;
     uint32_t extra = (uint32_t)(frac_acc / ppqn);
-    if (extra) { frac_acc -= (uint64_t)extra * ppqn; delta_x256 += extra; }
+    if (extra) { frac_acc -= (uint64_t)extra * ppqn; delta_x256 += extra; added += extra; }
+    debug_last_delta_added = added;
 
     if (ext_avg_us > 200.0f) {
       float beats = ext_avg_us / 1e6f * ppqn;

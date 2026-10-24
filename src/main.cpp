@@ -10,6 +10,9 @@
 static IntervalTimer ctrl_timer;
 static volatile uint32_t tick_count = 0;
 static uint32_t last_ui_ms = 0;
+#if PNC_LOG_CV
+static uint32_t last_delta = 0;
+#endif
 
 static void ck_isr() {
   masterClock.pulse_external();
@@ -24,6 +27,9 @@ static void control_tick() {
   if ((tick_count % 8) == 0) hal_input_sample_cv();
   masterClock.tick();
   uint32_t delta = masterClock.take_delta();
+#if PNC_LOG_CV
+  last_delta = delta;
+#endif
   // App computes (no I/O); infra emits. The env carries the globals the
   // engine needs instead of it reading them itself.
   const EngineEnv env = { USER_SCALES };
@@ -36,6 +42,8 @@ static void control_tick() {
 
 void setup() {
   Serial.begin(115200);
+  while (!Serial) { ; }
+  delay(2000);
   analogReadResolution(12);
   dac_init();
   patch_init();
@@ -50,6 +58,12 @@ void setup() {
   ctrl_timer.begin(control_tick, (uint32_t)(1000000 / CONTROL_RATE_HZ));
   ctrl_timer.priority(16);
   Serial.println("pnc: setup done");
+  for (int i = 0; i < NUM_OUTPUTS; i++) {
+    Serial.printf("ch%d mode=%u ratio=%u cv=%d..%d width=%u delay=%u phase=%u\n",
+                  i, channels[i].p.mode, channels[i].p.ratio,
+                  channels[i].p.cv_min, channels[i].p.cv_max,
+                  channels[i].p.width, channels[i].p.delay, channels[i].p.phase);
+  }
 #if PNC_DAC_SELFTEST
   // Block the timer context is not yet contended: ctrl_timer runs at prio 16,
   // but the self-test just writes the DAC directly; the engine also writes it,
@@ -73,11 +87,20 @@ void loop() {
   uint32_t cm = millis();
   if (cm - last_cvlog_ms > 250) {
     last_cvlog_ms = cm;
-    Serial.printf("cv: ADC1=%4u ADC2=%4u | out(mV) %4u %4u %4u %4u | run=%d\n",
+    Serial.printf("cv: ADC1=%4u ADC2=%4u | out(mV) %4u %4u %4u %4u | gates=%d%d%d%d | delta=%lu | newp=%lu add=%lu | pulses=%lu/%lu | ev0=%lu pos0=%lu | run=%d src=%d\n",
                   hal_input_cv1_raw(), hal_input_cv2_raw(),
                   channels[0].out_mv, channels[1].out_mv,
                   channels[2].out_mv, channels[3].out_mv,
-                  masterClock.running);
+                  channels[0].gate_state, channels[1].gate_state,
+                  channels[2].gate_state, channels[3].gate_state,
+                  (unsigned long)last_delta,
+                  (unsigned long)masterClock.debug_newp(),
+                  (unsigned long)masterClock.debug_delta_added(),
+                  (unsigned long)masterClock.pulse_count(),
+                  (unsigned long)masterClock.consumed_count(),
+                  (unsigned long)channels[0].event_count,
+                  (unsigned long)channels[0].pos_x256,
+                  masterClock.running, masterClock.source);
   }
 #endif
   uint32_t beat = millis();
