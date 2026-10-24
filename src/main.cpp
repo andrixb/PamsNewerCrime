@@ -86,9 +86,13 @@ void loop() {
     uint16_t bpm_shown = masterClock.bpm_cent;
     if (masterClock.source && masterClock.measured_bpm_cent())
       bpm_shown = masterClock.measured_bpm_cent();
-    Serial.printf("pnc: alive ticks=%u bpm=%d.%02d page=%d oled=%s\n", tick_count,
-                  bpm_shown / 100, bpm_shown % 100, ui_current_page(),
-                  ui_display_found() ? "ok" : "MISSING");
+    Serial.printf("pnc: alive ticks=%u bpm=%d.%02d page=%d oled=%s",
+                  tick_count, bpm_shown / 100, bpm_shown % 100,
+                  ui_current_page(), ui_display_found() ? "ok" : "MISSING");
+    if (masterClock.source)
+      Serial.printf(" ext us=%u ppqn=%u", masterClock.measured_period_us(),
+                    masterClock.ext_ppqn);
+    Serial.println();
   }
   ui_run_pending();
   uint32_t now = millis();

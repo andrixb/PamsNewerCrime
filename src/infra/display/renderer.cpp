@@ -86,11 +86,17 @@ void ui_draw() {
   }
 
   if (is_master()) {
-    uint16_t shown = masterClock.bpm_cent;
-    if (masterClock.source && masterClock.measured_bpm_cent()) shown = masterClock.measured_bpm_cent();
     gfx.setCursor(0, 0);
-    gfx.printf("M %d.%02d %s", shown / 100, shown % 100,
-                masterClock.source ? "EXT" : "INT");
+    if (masterClock.source) {
+      uint16_t mbpm = masterClock.measured_bpm_cent();
+      if (mbpm)
+        gfx.printf("M %d.%02d EXT", mbpm / 100, mbpm % 100);
+      else
+        gfx.printf("M --.-- EXT");
+    } else {
+      gfx.printf("M %d.%02d INT", masterClock.bpm_cent / 100,
+                  masterClock.bpm_cent % 100);
+    }
   } else if (is_sys()) {
     gfx.setCursor(0, 0);
     gfx.printf("SYS");
