@@ -17,13 +17,25 @@ static uint32_t warp_raw(uint32_t rb, uint32_t rawA, uint32_t half) {
 
 void MasterClock::pulse_external() {
   uint32_t now = clock_now_us();
+  if (ext_restart) {
+    // Clock stopped and timed out: drop the stale history so the long gap
+    // before this edge is not averaged into the new tempo.
+    ext_restart = false;
+    ext_last_pulse_us = 0;
+    for (uint8_t i = 0; i < EXT_DT_HIST; i++) ext_dt_hist[i] = 0;
+    ext_dt_head = 0;
+    ext_dt_count = 0;
+    ext_dt_sum = 0;
+  }
   uint32_t prev = ext_last_pulse_us;
+  // Reject sub-100us glitches / bouncy edges BEFORE they count: a glitch must
+  // neither advance the clock nor become the reference for the next interval.
+  if (prev && now - prev < 100) return;
   ext_last_pulse_us = now;
   ext_pulses++;
 
   if (!prev) return;                       // first pulse after a reset: no interval yet
   uint32_t dt = now - prev;
-  if (dt < 100) return;                    // ignore sub-100us glitches / runaway edges
 
   // Rolling average of the last EXT_DT_HIST intervals. This follows tempo
   // changes in just a few pulses while still smoothing jittery clocks.
@@ -51,6 +63,7 @@ void MasterClock::reset_phase() {
   ext_dt_sum = 0;
   ext_avg_us = 0;
   ext_bpm_cent = 0;
+  ext_restart = false;
 }
 
 uint32_t MasterClock::take_delta() {
@@ -102,7 +115,11 @@ void MasterClock::tick() {
       if (ext_avg_us > 0.0f) {
         uint32_t now = clock_now_us();
         uint32_t gap = now - ext_last_pulse_us;
-        if (gap > (uint32_t)(ext_avg_us * 4.0f)) { ext_avg_us = 0.0f; ext_bpm_cent = 0; }
+        if (gap > (uint32_t)(ext_avg_us * 4.0f)) {
+          ext_avg_us = 0.0f;
+          ext_bpm_cent = 0;
+          ext_restart = true;
+        }
       }
       return;
     }

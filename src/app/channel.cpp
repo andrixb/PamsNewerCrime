@@ -227,15 +227,22 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     // External source: pulse/div gates are timed from the measured tempo
     // because delta is only applied on input pulses, so phase does not advance
     // between events and the normal windowed gate would stay high.
+    // With no measured tempo yet (first pulses, or after the clock stopped and
+    // timed out) a fired event opens a fixed-length trigger instead.
+    const bool ext_gate = env.source == 1 &&
+                          (p.mode == MODE_PULSE || p.mode == MODE_DIV);
     uint32_t gate_ticks = 0;
-    if (env.source == 1 && env.bpm_cent > 0 &&
-        (p.mode == MODE_PULSE || p.mode == MODE_DIV)) {
-      const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
-      uint32_t quarter_ms = 6000000u / env.bpm_cent;
-      uint32_t output_ms = (uint32_t)((uint64_t)quarter_ms * period / QT);
-      uint32_t gate_ms = (uint32_t)((uint64_t)output_ms * p.width / 256);
-      if (gate_ms == 0) gate_ms = 1;
-      gate_ticks = gate_ms;
+    if (ext_gate) {
+      if (env.bpm_cent > 0) {
+        const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+        uint32_t quarter_ms = 6000000u / env.bpm_cent;
+        uint32_t output_ms = (uint32_t)((uint64_t)quarter_ms * period / QT);
+        uint32_t gate_ms = (uint32_t)((uint64_t)output_ms * p.width / 256);
+        if (gate_ms == 0) gate_ms = 1;
+        gate_ticks = gate_ms;
+      } else {
+        gate_ticks = EXT_GATE_FALLBACK_MS * (CONTROL_RATE_HZ / 1000);
+      }
     }
 
     uint32_t phase_off = (uint32_t)p.phase * period / 256;
@@ -453,16 +460,15 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     // For external clocks the phase only advances on input pulses, so a simple
     // windowed gate would stay high for ratios where delta is a multiple of the
     // channel period (e.g. 1/4 at 1 PPQN). Use a tempo-derived timer instead.
-    if (env.source == 1 && (p.mode == MODE_PULSE || p.mode == MODE_DIV)) {
-      if (fire && gate_ticks > 0) {
-        c.gate_state = 1;
+    // The timer is the only gate source here, so once it expires the output
+    // stays low (a stopped clock can never leave a gate latched high).
+    if (ext_gate) {
+      if (fire) {
         c.gate_rem = gate_ticks;
       } else if (c.gate_rem > 0) {
         c.gate_rem--;
-        if (c.gate_rem == 0) c.gate_state = 0;
-      } else if (gate_ticks > 0) {
-        c.gate_state = 0;
       }
+      c.gate_state = c.gate_rem > 0;
       frac = c.gate_state ? 2048 : 0;
     }
 

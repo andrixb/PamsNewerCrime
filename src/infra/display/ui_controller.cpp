@@ -197,7 +197,7 @@ void ui_service() {
   // LEFT encoder = select param / wrap into pages.
   int8_t dl = enc_l.read();
   while (dl > 0) { select_rel(1); dl--; }
-  while (dl < 0) { select_rel(-1); dl--; }
+  while (dl < 0) { select_rel(-1); dl++; }
 
   // RIGHT push: fine step is read live in adjust(); tap = next param; hold = reset.
   if (btn_enc_r_sw.just_pressed()) { enc_sw_down_tick = ui_ticks; enc_r_sw_handled = false; }

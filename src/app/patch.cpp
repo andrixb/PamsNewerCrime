@@ -2,7 +2,8 @@
 #include "app/clock.h"
 #include "app/storage_port.h"
 
-static bool dirty = false;
+// Set from the 1 kHz ISR (UI edits), cleared by the main-loop autosave.
+static volatile bool dirty = false;
 bool state_dirty() { return dirty; }
 void mark_dirty() { dirty = true; }
 
@@ -37,6 +38,11 @@ void patch_autosave_tick(uint32_t now_ms) {
   static uint32_t last_save_ms = 0;
   if (state_dirty() && now_ms - last_save_ms > 3000) {
     last_save_ms = now_ms;
+    // Clear BEFORE capturing: an edit landing mid-save re-marks dirty and is
+    // picked up by the next tick instead of being lost. Without clearing, the
+    // slot was rewritten every 3 s forever after the first edit (each write
+    // can stall interrupts on Teensy 4's flash-emulated EEPROM).
+    dirty = false;
     patch_save(SLOT_ACTIVE);
   }
 }

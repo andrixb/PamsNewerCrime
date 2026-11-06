@@ -1060,6 +1060,134 @@ static void test_storage_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// regression suites (review batch 1)
+// ---------------------------------------------------------------------------
+
+// Autosave writes SLOT_ACTIVE once per burst of edits, not forever.
+static void test_patch_autosave() {
+  const uint32_t off = store_slot_offset(SLOT_ACTIVE);
+  mark_dirty();
+  patch_autosave_tick(10000000u);
+  CHECK(!state_dirty());                       // save consumed the dirty flag
+  StoreBlob saved;
+  storage_port_read(off, &saved, sizeof(saved));
+  CHECK(blob_verify(saved));
+
+  // Clean state: later ticks must not touch storage again.
+  EEPROM.data[off] ^= 0xA5;                    // sentinel a rewrite would undo
+  const uint8_t sentinel = EEPROM.data[off];
+  patch_autosave_tick(10001000u);   // times in ms
+  patch_autosave_tick(10005000u);   // past the 3 s limit, but nothing to save
+  CHECK(EEPROM.data[off] == sentinel);
+
+  // A new edit is saved again.
+  mark_dirty();
+  patch_autosave_tick(10006000u);
+  CHECK(!state_dirty());
+  CHECK(EEPROM.data[off] != sentinel);
+
+  // ...but no sooner than 3 s after the previous save.
+  mark_dirty();
+  patch_autosave_tick(10007000u);
+  CHECK(state_dirty());
+  patch_autosave_tick(10009500u);
+  CHECK(!state_dirty());
+  suite_ok("patch: autosave clears dirty");
+}
+
+static void ext_clock_start(uint8_t ppqn) {
+  masterClock = MasterClock{};
+  masterClock.source = 1;
+  masterClock.ext_ppqn = ppqn;
+  masterClock.reset_phase();
+  mock_time_us = 1000000;
+}
+
+// Glitch edges are rejected before they count; a timeout restarts measurement.
+static void test_clock_external_robust() {
+  const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+
+  // A bounce 50us after a real edge must not advance the clock.
+  ext_clock_start(1);
+  masterClock.pulse_external();
+  mock_time_us += 50;
+  masterClock.pulse_external();                // glitch
+  masterClock.tick();
+  CHECK(masterClock.take_delta() == QT);       // one quarter, not two
+
+  // ...nor become the reference for the next interval.
+  ext_clock_start(1);
+  for (int i = 0; i < 4; i++) { masterClock.pulse_external(); mock_time_us += 500000u; }
+  masterClock.pulse_external();
+  mock_time_us += 60;
+  masterClock.pulse_external();                // glitch
+  mock_time_us += 500000u - 60;
+  masterClock.pulse_external();
+  masterClock.tick();
+  CHECK(masterClock.measured_period_us() == 500000u);
+
+  // Stop the clock long enough to time out, then resume at a new tempo: the
+  // gap must not be averaged in, so the first interval already reads true.
+  ext_clock_start(24);
+  const uint32_t p120 = 60000000u / (120u * 24u);
+  for (int i = 0; i < 20; i++) {
+    mock_time_us += p120;
+    masterClock.pulse_external();
+    masterClock.tick();
+  }
+  mock_time_us += 2000000u;                    // 2 s silence
+  masterClock.tick();
+  CHECK(masterClock.measured_bpm_cent() == 0);
+  const uint32_t p90 = 60000000u / (90u * 24u);
+  masterClock.pulse_external();                // restart edge
+  mock_time_us += p90;
+  masterClock.pulse_external();
+  masterClock.tick();
+  CHECK(masterClock.measured_bpm_cent() >= 8950 && masterClock.measured_bpm_cent() <= 9050);
+  suite_ok("clock: external glitch/restart");
+}
+
+// PULSE gates under external clock never latch high once the clock stops.
+static void test_channel_ext_gate_stop() {
+  ext_clock_start(1);
+  channels_init(16);
+  Channel &c = channels[0];
+  setup_pulse(c, 16, 128);                     // 1/4, 50% duty
+  channels_reset();
+  auto run_ms = [&](int ms) {
+    for (int i = 0; i < ms; i++) {
+      mock_time_us += 1000;
+      masterClock.tick();
+      const EngineEnv env = { USER_SCALES, masterClock.measured_bpm_cent(), 1 };
+      channels_update(masterClock.take_delta(), 0, 0, env);
+    }
+  };
+  int highs = 0;
+  for (int b = 0; b < 8; b++) {                // 120 BPM, 1 PPQN
+    masterClock.pulse_external();
+    for (int i = 0; i < 500; i++) { run_ms(1); if (b == 7 && c.gate_state) highs++; }
+  }
+  CHECK(highs >= 245 && highs <= 255);         // ~50% of a 500 ms beat
+  masterClock.pulse_external();
+  run_ms(5);
+  CHECK(c.gate_state && c.out_mv == 5000);     // last pulse still gates
+  run_ms(5000);                                // clock stopped, estimator timed out
+  CHECK(masterClock.measured_bpm_cent() == 0);
+  CHECK(!c.gate_state && c.out_mv == 0);
+
+  // No tempo yet: a pulse opens the fixed fallback trigger, then closes.
+  ext_clock_start(1);
+  channels_reset();
+  masterClock.pulse_external();
+  run_ms(1);
+  CHECK(c.gate_state);
+  run_ms(EXT_GATE_FALLBACK_MS + 1);
+  CHECK(!c.gate_state && c.out_mv == 0);
+  masterClock = MasterClock{};
+  suite_ok("channel: external gate stops");
+}
+
 int main() {
   test_euclid();
   test_clock();
@@ -1093,6 +1221,9 @@ int main() {
   test_clock_tempo();
   test_blob_golden();
   test_storage_roundtrip();
+  test_patch_autosave();
+  test_clock_external_robust();
+  test_channel_ext_gate_stop();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }
