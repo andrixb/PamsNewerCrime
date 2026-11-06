@@ -525,6 +525,20 @@ static void test_channel_lfo() {
   for (int k = 1; k < 120; k++)
     if (abs((int)sv[peak_at - k] - (int)sv[peak_at + k]) > 60) sym = false;
   CHECK(sym);
+
+  // Slow LFO resolution: a 4-bar triangle at 120 BPM (~8 s) used to move in
+  // at most 256 steps per cycle; 16-bit phase gives thousands of levels.
+  channels_init(DEFAULT_RATIO);
+  c.p.mode = MODE_LFO; c.p.ratio = 23; c.p.wave = LFO_TRI; c.p.skew = 128;
+  c.p.cv_min = 0; c.p.cv_max = 10000; c.p.slew = 0;
+  channels_reset();
+  int levels = 0;
+  uint16_t lastv = 0xFFFF;
+  for (uint32_t t = 0; t < 393216 / 49; t++) {
+    drive(1, 49);                        // ~120 BPM in x256 units per ms
+    if (c.out_mv != lastv) { levels++; lastv = c.out_mv; }
+  }
+  CHECK(levels > 2000);
   suite_ok("channel: LFO waves");
 }
 

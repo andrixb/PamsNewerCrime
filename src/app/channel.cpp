@@ -156,31 +156,34 @@ static uint8_t rand8() {
   return rng >> 24;
 }
 
-static uint16_t wave_value(uint8_t wave, uint8_t shape, uint32_t ph256) {
-  uint8_t ph = ph256 & 0xFF;
+// ph16: phase within the cycle, 0..65535. Continuous shapes use the full
+// 16 bits (a slow 4-bar LFO used to move in 256 audible steps); `shape`
+// thresholds stay on the 8-bit grid so duty/skew behave exactly as before.
+static uint16_t wave_value(uint8_t wave, uint8_t shape, uint32_t ph16) {
   switch (wave) {
     case LFO_SINE: {
-      // 64-entry table, interpolated on the low 2 phase bits.
-      const int32_t a = SINE_LUT[ph >> 2], b = SINE_LUT[(ph >> 2) + 1];
-      return (uint16_t)(a + (b - a) * (int32_t)(ph & 3) / 4);
+      // 64-entry table, interpolated on the low 10 phase bits.
+      const int32_t a = SINE_LUT[ph16 >> 10], b = SINE_LUT[(ph16 >> 10) + 1];
+      return (uint16_t)(a + (b - a) * (int32_t)(ph16 & 1023) / 1024);
     }
     case LFO_TRI: {
-      uint32_t rise = constrain((int16_t)shape, 1, 255);
-      if (ph < rise) return ph * 2048 / rise;
-      return (255 - ph) * 2048 / (256 - rise);
+      uint32_t rise = (uint32_t)constrain((int16_t)shape, 1, 255) << 8;
+      if (ph16 < rise) return (uint16_t)(ph16 * 2048 / rise);
+      return (uint16_t)((65535 - ph16) * 2048 / (65536 - rise));
     }
-    case LFO_SAW:  return (uint32_t)ph * 2048 / 255;
-    case LFO_SQR:  return ph < shape ? 2048 : 0;
+    case LFO_SAW:  return (uint16_t)(ph16 * 2048 / 65535);
+    case LFO_SQR:  return (ph16 >> 8) < shape ? 2048 : 0;
     case LFO_TRAPZ: {
       // Plateau edges move with `shape`: ramp width = shape/2 at each end.
-      uint32_t ramp = (uint32_t)constrain((int16_t)shape, 1, 127);
-      if (ph < ramp) return ph * 2048 / ramp;
-      if (ph < 256 - ramp) return 2048;
-      return (uint32_t)(255 - ph) * 2048 / ramp;
+      uint32_t ramp = (uint32_t)constrain((int16_t)shape, 1, 127) << 8;
+      if (ph16 < ramp) return (uint16_t)(ph16 * 2048 / ramp);
+      if (ph16 < 65536 - ramp) return 2048;
+      return (uint16_t)((65535 - ph16) * 2048 / ramp);
     }
     case LFO_PARAB: {
-      int32_t x = 2 * (int32_t)ph - 255;
-      return (uint32_t)(4 * 16320 - x * x) * 2048 / (4 * 16320);
+      const int64_t x = 2 * (int64_t)ph16 - 65535;
+      const int64_t full = 65535LL * 65535LL;
+      return (uint16_t)((full - x * x) * 2048 / full);
     }
     default: return 0;
   }
@@ -292,7 +295,8 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     const bool trig_on = c.gate_rem > 0;
 
     uint32_t ph = (c.pos_x256 + phase_off) % period;
-    uint32_t ph256 = ph * 256 / period;
+    const uint32_t ph16 = (uint32_t)((uint64_t)ph * 65536 / period);
+    uint32_t ph256 = ph16 >> 8;   // == ph * 256 / period
     uint16_t frac = 0;
 
     switch (p.mode) {
@@ -316,15 +320,15 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         break;
       }
       case MODE_LFO: {
-        frac = wave_value(p.wave, p.skew ? p.skew : 128, ph256);
+        frac = wave_value(p.wave, p.skew ? p.skew : 128, ph16);
         c.gate_state = frac > 1024;
         break;
       }
       case MODE_RAMP: {
-        uint32_t rise = constrain((int16_t)(p.skew ? p.skew : 128), 1, 254);
-        if (ph256 < rise) frac = ph256 * 2048 / rise;
-        else frac = (255 - ph256) * 2048 / (255 - rise);
-        c.gate_state = ph256 < rise;
+        uint32_t rise = (uint32_t)constrain((int16_t)(p.skew ? p.skew : 128), 1, 254) << 8;
+        if (ph16 < rise) frac = (uint16_t)(ph16 * 2048 / rise);
+        else frac = (uint16_t)((65535 - ph16) * 2048 / (65535 - rise));
+        c.gate_state = ph16 < rise;
         break;
       }
       case MODE_STEP: {
