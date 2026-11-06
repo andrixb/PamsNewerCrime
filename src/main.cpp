@@ -53,6 +53,12 @@ void setup() {
   pinMode(PIN_CK_IN, INPUT_PULLDOWN);
   attachInterrupt(digitalPinToInterrupt(PIN_CK_IN), ck_isr, RISING);
 #endif
+  // attachInterrupt leaves the GPIO IRQ at the default priority (128), below
+  // the control timer (16), so clock edges were timestamped late whenever a
+  // tick was running. ck_isr is a few instructions (timestamp + count): run
+  // it above everything so tempo measurement sees the true edge time. This
+  // also means tick() can never interrupt a half-finished pulse update.
+  NVIC_SET_PRIORITY(IRQ_GPIO6789, 0);
   ctrl_timer.begin(control_tick, (uint32_t)(1000000 / CONTROL_RATE_HZ));
   ctrl_timer.priority(16);
   Serial.println("pnc: setup done");
@@ -70,7 +76,9 @@ void setup() {
 }
 
 static uint32_t last_beat_ms = 0;
+#if PNC_LOG_CV
 static uint32_t last_cvlog_ms = 0;
+#endif
 
 void loop() {
 #if PNC_LOG_CV

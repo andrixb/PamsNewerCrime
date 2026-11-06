@@ -348,7 +348,7 @@ const char *menu_label_of(uint8_t ch, uint8_t idx, MenuPage pg) {
 }
 
 void menu_fmt_val(uint8_t ch, uint8_t idx, MenuPage pg, char *buf, size_t n) {
-  int32_t v = menu_get_val(ch, idx, pg);
+  const int v = (int)menu_get_val(ch, idx, pg);   // int: matches %d on ARM too
   if (pg == MENU_MASTER) {
     switch (idx) {
       case 0: snprintf(buf, n, "%d.%02d", (int)(v / 100), (int)(v % 100)); break;
