@@ -14,7 +14,7 @@ struct Channel {
   uint8_t step_idx;
   uint8_t sh_val;
   uint16_t env_t;    // envelope ms counter
-  uint16_t filt_mv;  // slew filter state
+  int32_t filt_x256; // slew filter state, mV << 8 (fraction bits so it settles)
   int16_t wv;        // woggle / random-walk value 0..255
   uint8_t wtar;      // woggle: stepped random target
   uint8_t wsm;       // woggle: smoothed value (chased by wv)

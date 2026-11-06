@@ -502,6 +502,29 @@ static void test_channel_lfo() {
     CHECK(lo >= 0 && hi <= 5000);
     CHECK(hi > 4000 && lo < 100);   // full excursion within the window
   }
+
+  // Sine: full 0..cv_max excursion, peak mid-cycle, no flat dead zone (the old
+  // table peaked at ~70% and sat at 0 for the last eighth of every cycle).
+  channels_init(DEFAULT_RATIO);
+  c.p.mode = MODE_LFO; c.p.ratio = 16; c.p.wave = LFO_SINE;
+  c.p.cv_min = 0; c.p.cv_max = 10000; c.p.slew = 0;
+  channels_reset();
+  uint16_t sv[256];
+  for (uint32_t t = 0; t < 256; t++) { drive(1); sv[t] = c.out_mv; }
+  uint16_t smin = 65535, smax = 0;
+  int zeros = 0, peak_at = 0;
+  for (int t = 0; t < 256; t++) {
+    if (sv[t] < smin) smin = sv[t];
+    if (sv[t] > smax) { smax = sv[t]; peak_at = t; }
+    if (sv[t] == 0) zeros++;
+  }
+  CHECK(smin == 0 && smax == 10000);
+  CHECK(zeros <= 2);                     // touches zero, does not dwell there
+  CHECK(peak_at >= 126 && peak_at <= 130);
+  bool sym = true;                       // mirror-symmetric about the peak
+  for (int k = 1; k < 120; k++)
+    if (abs((int)sv[peak_at - k] - (int)sv[peak_at + k]) > 60) sym = false;
+  CHECK(sym);
   suite_ok("channel: LFO waves");
 }
 
@@ -754,7 +777,24 @@ static void test_channel_slew() {
   s.p.mode = MODE_LFO; s.p.ratio = 16; s.p.wave = LFO_SQR; s.p.skew = 128;
   s.p.cv_min = 0; s.p.cv_max = 5000; s.p.slew = 16;
   drive(1);
-  CHECK(s.out_mv == 312);                // one lag step: 5000*16/256
+  CHECK(s.out_mv == 313);                // one lag step: 5000*16/256 = 312.5, rounded
+
+  // Slow slew must actually reach its target, rising and falling (whole-mV
+  // state used to stall up to 256/slew mV short on the way up).
+  static const uint8_t slews[] = { 1, 8, 64 };
+  for (uint8_t slew : slews) {
+    channels_init(DEFAULT_RATIO);
+    Channel &k = channels[0];
+    k.p.mode = MODE_STEP; k.p.cv_min = 0; k.p.cv_max = 10000; k.p.slew = slew;
+    for (int i = 0; i < MAX_STEPS; i++) k.p.steps[i] = 255;
+    k.sh_val = 255;                      // delta 0: hold the step value
+    drive(20000, 0);
+    CHECK(k.out_mv >= 9999);
+    for (int i = 0; i < MAX_STEPS; i++) k.p.steps[i] = 0;
+    k.sh_val = 0;
+    drive(20000, 0);
+    CHECK(k.out_mv <= 1);
+  }
   suite_ok("channel: slew limiter");
 }
 
@@ -765,14 +805,32 @@ static void test_channel_gquant() {
   c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
   c.p.scale = 1; c.p.gquant = 1;         // major, post-filter on
   static const bool in_major[12] = {1,0,1,0,1,1,0,1,0,1,0,1};
+  // 1 V/oct grid: semitone k sits at round(k * 1000 / 12) mV.
+  auto semi_of = [](uint16_t mv) {
+    int k = (mv * 12 + 500) / 1000;
+    return ((k * 1000 + 6) / 12 == mv) ? k : -1;
+  };
   bool off_grid = false;
   for (uint32_t t = 0; t < 256; t++) {
     drive(1);
-    int semi = c.out_mv / 83;
-    if (c.out_mv % 83 != 0) off_grid = true;
-    else if (semi < 0 || semi > 30 || !in_major[semi % 12]) off_grid = true;
+    int semi = semi_of(c.out_mv);
+    if (semi < 0 || c.out_mv > 2490 || !in_major[semi % 12]) off_grid = true;
   }
   CHECK(!off_grid);
+
+  // Accuracy at the top of a full 10 V window: 10 V is exactly 120 semitones.
+  channels_init(DEFAULT_RATIO);
+  c.p.mode = MODE_STEP; c.p.cv_min = 0; c.p.cv_max = 10000; c.p.slew = 0;
+  c.p.scale = 0; c.p.gquant = 1;         // chromatic
+  for (int i = 0; i < MAX_STEPS; i++) c.p.steps[i] = 255;
+  c.sh_val = 255;                        // delta 0: hold the step value
+  drive(2, 0);
+  CHECK(c.out_mv == 10000);
+  // 5 V (60 semitones) lands exactly on 5000 mV.
+  for (int i = 0; i < MAX_STEPS; i++) c.p.steps[i] = 128;   // ~5020 mV in
+  c.sh_val = 128;
+  drive(1, 0);
+  CHECK(c.out_mv == 5000);
   suite_ok("channel: global quantise");
 }
 

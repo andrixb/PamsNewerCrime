@@ -6,12 +6,15 @@ static_assert(NUM_OUTPUTS <= 8, "dirty mask in channels_take_outputs is 8 bits")
 
 Channel channels[NUM_OUTPUTS];
 
+// One full sine cycle as a raised cosine, 0 -> 2048 -> 0:
+// round(1024 - 1024*cos(2*pi*i/64)), i = 0..64. Entry 64 repeats entry 0 so
+// wave_value() can interpolate across the wrap without a bounds check.
 static const uint16_t SINE_LUT[65] = {
-  0, 78, 156, 233, 310, 386, 461, 535, 608, 680, 750, 818, 884, 947, 1008, 1066,
-  1120, 1171, 1218, 1261, 1300, 1334, 1364, 1389, 1409, 1424, 1434, 1440, 1440, 1434, 1424, 1409,
-  1389, 1364, 1334, 1300, 1261, 1218, 1171, 1120, 1066, 1008, 947, 884, 818, 750,
-  680, 608, 535, 461, 386, 310, 233, 156, 78, 0,
-  0, 0, 0, 0, 0, 0, 0, 0, 0
+  0, 5, 20, 44, 78, 121, 173, 232, 300, 374, 455, 541, 632,
+  727, 824, 924, 1024, 1124, 1224, 1321, 1416, 1507, 1593, 1674, 1748, 1816,
+  1875, 1927, 1970, 2004, 2028, 2043, 2048, 2043, 2028, 2004, 1970, 1927, 1875,
+  1816, 1748, 1674, 1593, 1507, 1416, 1321, 1224, 1124, 1024, 924, 824, 727,
+  632, 541, 455, 374, 300, 232, 173, 121, 78, 44, 20, 5, 0,
 };
 
 static int quantize_semi(int pos, uint16_t mask) {
@@ -110,7 +113,7 @@ void channels_reset() {
     c.wsm = 128;
     c.last_note = 0;
     c.out_mv = 0;
-    c.filt_mv = 0;
+    c.filt_x256 = 0;
     c.hold_mv = 0;
     c.x_hi = 0;
     c.ev_off = 0;
@@ -156,7 +159,11 @@ static uint8_t rand8() {
 static uint16_t wave_value(uint8_t wave, uint8_t shape, uint32_t ph256) {
   uint8_t ph = ph256 & 0xFF;
   switch (wave) {
-    case LFO_SINE: return SINE_LUT[ph >> 2];
+    case LFO_SINE: {
+      // 64-entry table, interpolated on the low 2 phase bits.
+      const int32_t a = SINE_LUT[ph >> 2], b = SINE_LUT[(ph >> 2) + 1];
+      return (uint16_t)(a + (b - a) * (int32_t)(ph & 3) / 4);
+    }
     case LFO_TRI: {
       uint32_t rise = constrain((int16_t)shape, 1, 255);
       if (ph < rise) return ph * 2048 / rise;
@@ -507,23 +514,28 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
 
     // Global quantise: snap the final value onto the selected scale within the
     // channel's cv window (works on any mode as a post-filter).
+    // 1 V/oct: a semitone is exactly 1000/12 mV (83.33), not 83 — at 83 the
+    // error reached half a semitone by 10 V. Snaps to the nearest semitone.
     if (p.gquant) {
-      uint32_t span = p.cv_max > p.cv_min ? (uint32_t)(p.cv_max - p.cv_min) : 0;
-      uint32_t st = span / 83;
-      if (st < 1) st = 1;
-      int semis = (int)(((uint32_t)(mv > p.cv_min ? mv - p.cv_min : 0) * st) / (span ? span : 1));
-      int q = quantize_semi(semis, scale_mask(p.scale, env.user_scales));
-      int32_t m = (int32_t)q * 83;
-      if (m > p.cv_max - p.cv_min) m = p.cv_max - p.cv_min;
-      mv = (uint16_t)(p.cv_min + m);
+      const uint16_t mask = scale_mask(p.scale, env.user_scales);
+      const int32_t span = p.cv_max > p.cv_min ? (int32_t)p.cv_max - p.cv_min : 0;
+      const int32_t rel = mv > p.cv_min ? (int32_t)mv - p.cv_min : 0;
+      const int max_semi = (int)(span * 12 / 1000);   // highest semitone in window
+      int q = quantize_semi((int)((rel * 12 + 500) / 1000), mask);
+      // Keep the note inside the window AND on the scale: step down if the
+      // nearest scale tone lies above cv_max.
+      while (q > 0 && (q > max_semi || !((mask >> (q % 12)) & 1))) q--;
+      mv = (uint16_t)(p.cv_min + ((int32_t)q * 1000 + 6) / 12);
     }
 
     if (p.slew && p.mode != MODE_PULSE && p.mode != MODE_DIV && p.mode != MODE_RATCHET && p.mode != MODE_LOGIC) {
-      int32_t diff = (int32_t)mv - (int32_t)c.filt_mv;
-      c.filt_mv += (int16_t)((diff * (int32_t)p.slew) >> 8);
-      mv = c.filt_mv;
+      // Q8 fixed point: with whole-mV state, rises smaller than 256/slew mV
+      // rounded to zero and the output settled short (e.g. -31 mV at slew 8).
+      const int32_t diff = ((int32_t)mv << 8) - c.filt_x256;
+      c.filt_x256 += (diff * (int32_t)p.slew) >> 8;
+      mv = (uint16_t)((c.filt_x256 + 128) >> 8);
     } else {
-      c.filt_mv = mv;
+      c.filt_x256 = (int32_t)mv << 8;
     }
     c.out_mv = mv;
     c.out_dirty = 1;   // emitted by the caller via channels_take_outputs()
