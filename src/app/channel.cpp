@@ -209,10 +209,31 @@ static uint32_t div_period(const ChannelParams &p) {
   return (uint32_t)per;
 }
 
-static int32_t scaled(const ChannelParams &p, uint16_t frac) {
-  int32_t v = (int32_t)p.cv_min + (int32_t)frac * (p.cv_max - p.cv_min) / 2048;
+// Place a window-relative value: apply invert (mirror within the window) and
+// clamp to the DAC range.
+static int32_t place(const ChannelParams &p, int32_t v) {
   if (p.invert) v = (int32_t)p.cv_min + (p.cv_max - v);
   return constrain(v, 0, DAC_MAX_MV);
+}
+
+static int32_t scaled(const ChannelParams &p, uint16_t frac) {
+  return place(p, (int32_t)p.cv_min + (int32_t)frac * (p.cv_max - p.cv_min) / 2048);
+}
+
+// ---- 1 V/oct grid: a semitone is exactly 1000/12 mV (83.33) ----
+static int32_t semi_mv(int q) { return ((int32_t)q * 1000 + 6) / 12; }
+
+// Highest whole semitone that fits in the channel's cv window.
+static int window_semis(const ChannelParams &p) {
+  const int32_t span = p.cv_max > p.cv_min ? (int32_t)p.cv_max - p.cv_min : 0;
+  return (int)(span * 12 / 1000);
+}
+
+// Nearest scale tone to `pos`, kept inside 0..max_semi and on the scale.
+static int snap_semi(int pos, uint16_t mask, int max_semi) {
+  int q = quantize_semi(pos, mask);
+  while (q > 0 && (q > max_semi || !((mask >> (q % 12)) & 1))) q--;
+  return q;
 }
 
 void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
@@ -298,6 +319,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     const uint32_t ph16 = (uint32_t)((uint64_t)ph * 65536 / period);
     uint32_t ph256 = ph16 >> 8;   // == ph * 256 / period
     uint16_t frac = 0;
+    int32_t note_mv = -1;   // NOTE/QUANT: exact grid pitch, bypasses frac
 
     switch (p.mode) {
       case MODE_PULSE: case MODE_DIV: {
@@ -357,13 +379,11 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         break;
       }
       case MODE_NOTE: {
-        uint32_t span = p.cv_max > p.cv_min ? (uint32_t)(p.cv_max - p.cv_min) : 0;
-        uint32_t st = span / 83;
-        if (st < 1) st = 1;
-        int pos = (int)((st * ph256) >> 8);
-        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales));
-        frac = (uint16_t)((uint32_t)q * 2048 / st);
-        if (frac > 2048) frac = 2048;
+        // Quantised ramp across every semitone in the window (inclusive).
+        const int max_semi = window_semis(p);
+        const int pos = (int)(((uint32_t)(max_semi + 1) * ph16) >> 16);
+        const int q = snap_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales), max_semi);
+        note_mv = (int32_t)p.cv_min + semi_mv(q);
         uint8_t note = q > 255 ? 255 : (uint8_t)q;
         c.gate_state = (note != c.last_note);
         c.last_note = note;
@@ -371,19 +391,24 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
       }
       case MODE_QUANT: {
         // 1V/oct quantiser: read the selected source (CV1/CV2 jack or another
-        // output), map 0..255 across the channel's cv window, snap to the scale.
-        uint32_t span = p.cv_max > p.cv_min ? (uint32_t)(p.cv_max - p.cv_min) : 0;
-        uint32_t st = span / 83;           // semitones available in the window
-        if (st < 1) st = 1;
-        int rv = resolve_in(p.quant_src, cv1, cv2);
-#if CV_BIPOLAR
-        if (p.quant_src < 2) rv += 128;    // bipolar jacks: mid-scale -> 0..255
-#endif
-        rv = constrain(rv, 0, 255);
-        int pos = (int)((uint32_t)rv * st / 255);
-        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales));
-        frac = (uint16_t)((uint32_t)q * 2048 / st);
-        if (frac > 2048) frac = 2048;
+        // output) at 12 bits, map it across the channel's cv window, snap to
+        // the nearest scale tone.
+        uint32_t r12;
+        if (p.quant_src < 2) {
+          // Raw (un-recentred) jack reading; bipolar jacks span 0..4095 too.
+          const uint8_t lo = p.quant_src == 0 ? cv1 : cv2;
+          r12 = env.cv_hires ? (p.quant_src == 0 ? env.cv1_12 : env.cv2_12)
+                             : ((uint32_t)lo << 4 | lo >> 4);
+        } else {
+          const uint8_t ch = p.quant_src - 2;
+          const uint32_t mv_in = ch < NUM_OUTPUTS ? channels[ch].out_mv : 0;
+          r12 = mv_in * 4095 / DAC_MAX_MV;
+        }
+        if (r12 > 4095) r12 = 4095;
+        const int max_semi = window_semis(p);
+        const int pos = (int)((r12 * (uint32_t)max_semi * 2 + 4095) / (2 * 4095));
+        const int q = snap_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales), max_semi);
+        note_mv = (int32_t)p.cv_min + semi_mv(q);
         uint8_t note = q > 255 ? 255 : (uint8_t)q;
         c.gate_state = (note != c.last_note);
         c.last_note = note;
@@ -460,7 +485,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         break;
     }
 
-    uint16_t mv = scaled(p, frac);
+    uint16_t mv = (uint16_t)(note_mv >= 0 ? place(p, note_mv) : scaled(p, frac));
 
     // --- Cross-op: combine this output's value with a source (CV jack or out) ---
     if (p.xop) {
@@ -498,15 +523,10 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     // 1 V/oct: a semitone is exactly 1000/12 mV (83.33), not 83 — at 83 the
     // error reached half a semitone by 10 V. Snaps to the nearest semitone.
     if (p.gquant) {
-      const uint16_t mask = scale_mask(p.scale, env.user_scales);
-      const int32_t span = p.cv_max > p.cv_min ? (int32_t)p.cv_max - p.cv_min : 0;
+      const uint16_t mask = scale_mask(p.scale % SCALE_COUNT, env.user_scales);
       const int32_t rel = mv > p.cv_min ? (int32_t)mv - p.cv_min : 0;
-      const int max_semi = (int)(span * 12 / 1000);   // highest semitone in window
-      int q = quantize_semi((int)((rel * 12 + 500) / 1000), mask);
-      // Keep the note inside the window AND on the scale: step down if the
-      // nearest scale tone lies above cv_max.
-      while (q > 0 && (q > max_semi || !((mask >> (q % 12)) & 1))) q--;
-      mv = (uint16_t)(p.cv_min + ((int32_t)q * 1000 + 6) / 12);
+      const int q = snap_semi((int)((rel * 12 + 500) / 1000), mask, window_semis(p));
+      mv = (uint16_t)(p.cv_min + semi_mv(q));
     }
 
     if (p.slew && p.mode != MODE_PULSE && p.mode != MODE_DIV && p.mode != MODE_RATCHET && p.mode != MODE_LOGIC) {

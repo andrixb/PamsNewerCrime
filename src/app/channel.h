@@ -37,6 +37,12 @@ struct EngineEnv {
   const uint16_t *user_scales;
   uint16_t bpm_cent = 0; // effective tempo (internal setpoint or measured external)
   uint8_t source = 0;    // 0 = internal, 1 = external
+  // Optional full-resolution CV jack readings (0..4095, same orientation as
+  // the 8-bit cv1/cv2). The quantiser uses them when cv_hires is set: 8 bits
+  // is ~39 mV per step, close to half a semitone.
+  uint16_t cv1_12 = 0;
+  uint16_t cv2_12 = 0;
+  uint8_t cv_hires = 0;
 };
 
 void channels_init(uint8_t default_ratio);

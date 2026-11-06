@@ -335,20 +335,24 @@ static void test_channel_div() {
   suite_ok("channel: clock div/mult");
 }
 
+// 1 V/oct grid: semitone k sits at round(k * 1000 / 12) mV; -1 if off-grid.
+static int grid_semi(uint16_t mv) {
+  int k = (mv * 12 + 500) / 1000;
+  return ((k * 1000 + 6) / 12 == mv) ? k : -1;
+}
+
 static void test_channel_note() {
   channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_NOTE; c.p.ratio = 16; c.p.scale = 1;   // major
-  c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0;       // 30 semitones, 83 mV/semi
+  c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0;       // semitones 0..29 fit
 
   static const bool in_major[12] = {1,0,1,0,1,1,0,1,0,1,0,1};
   bool seen[31] = { false };
   bool off_grid = false;
   for (uint32_t t = 0; t < 256; t++) {
     drive(1);
-    int best = -1;
-    for (int k = 0; k <= 30; k++)
-      if (abs((int)c.out_mv - k * 83) <= 3) best = k;
+    int best = grid_semi(c.out_mv);       // exact 1 V/oct grid note, or -1
     if (best < 0 || !in_major[best % 12]) off_grid = true;
     else seen[best] = true;
   }
@@ -356,6 +360,25 @@ static void test_channel_note() {
   int n = 0;
   for (int k = 0; k <= 30; k++) if (seen[k]) n++;
   CHECK(n == 18);                       // all 18 major pitches over 2.5 octaves are hit
+
+  // Full 10 V chromatic window: the ramp walks all 121 grid notes, top = 10 V.
+  channels_init(DEFAULT_RATIO);
+  c.p.mode = MODE_NOTE; c.p.ratio = 16; c.p.scale = 0;
+  c.p.cv_min = 0; c.p.cv_max = 10000; c.p.slew = 0;
+  bool hit[121] = { false };
+  bool on_grid = true;
+  uint16_t top = 0;
+  for (uint32_t t = 0; t < 24576 / 4; t++) {
+    drive(1, 4);
+    int k = grid_semi(c.out_mv);
+    if (k < 0 || k > 120) on_grid = false; else hit[k] = true;
+    if (c.out_mv > top) top = c.out_mv;
+  }
+  int all = 0;
+  for (int k = 0; k <= 120; k++) if (hit[k]) all++;
+  CHECK(on_grid);
+  CHECK(all == 121);
+  CHECK(top == 10000);
   suite_ok("channel: note quantiser");
 }
 
@@ -461,15 +484,28 @@ static void test_channel_quant_app() {
   bool off_grid = false, nonmono = false;
   for (int s = 0; s <= 255; s++) {
     channels_update(0, (uint8_t)s, 0, {USER_SCALES});
-    int best = -1;
-    for (int k = 0; k <= 30; k++)
-      if (abs((int)c.out_mv - k * 83) <= 3) best = k;
+    int best = grid_semi(c.out_mv);       // exact 1 V/oct grid note, or -1
     if (best < 0 || !in_major[best % 12]) off_grid = true;
     if (prev_mv >= 0 && (int)c.out_mv < prev_mv) nonmono = true;
     prev_mv = c.out_mv;
   }
   CHECK(!off_grid);
   CHECK(!nonmono);
+
+  // 12-bit input over a full 10 V chromatic window: the CV for semitone k
+  // (k/120 of full scale) must land exactly on note k, for all 121 notes.
+  // 8 bits (~39 mV/step) cannot place every semitone centre.
+  c.p.cv_max = 10000; c.p.scale = 0;          // chromatic
+  bool exact = true;
+  for (int k = 0; k <= 120; k++) {
+    EngineEnv env = { USER_SCALES };
+    env.cv1_12 = (uint16_t)((k * 4095 + 60) / 120);
+    env.cv_hires = 1;
+    channels_update(0, 0, 0, env);
+    if (grid_semi(c.out_mv) != k) exact = false;
+  }
+  CHECK(exact);
+  CHECK(c.out_mv == 10000);
   suite_ok("channel: quantiser app");
 }
 
@@ -819,15 +855,10 @@ static void test_channel_gquant() {
   c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
   c.p.scale = 1; c.p.gquant = 1;         // major, post-filter on
   static const bool in_major[12] = {1,0,1,0,1,1,0,1,0,1,0,1};
-  // 1 V/oct grid: semitone k sits at round(k * 1000 / 12) mV.
-  auto semi_of = [](uint16_t mv) {
-    int k = (mv * 12 + 500) / 1000;
-    return ((k * 1000 + 6) / 12 == mv) ? k : -1;
-  };
   bool off_grid = false;
   for (uint32_t t = 0; t < 256; t++) {
     drive(1);
-    int semi = semi_of(c.out_mv);
+    int semi = grid_semi(c.out_mv);
     if (semi < 0 || c.out_mv > 2490 || !in_major[semi % 12]) off_grid = true;
   }
   CHECK(!off_grid);
