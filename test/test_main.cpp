@@ -1212,12 +1212,18 @@ static void test_storage_roundtrip() {
 // regression suites (review batch 1)
 // ---------------------------------------------------------------------------
 
-// Autosave writes SLOT_ACTIVE once per burst of edits, not forever.
+// Autosave writes SLOT_ACTIVE once per burst of edits, ~3 s after the last
+// one, and never again while nothing changes.
 static void test_patch_autosave() {
   const uint32_t off = store_slot_offset(SLOT_ACTIVE);
+  uint32_t t = 10000000u;                      // ms
   mark_dirty();
-  patch_autosave_tick(10000000u);
-  CHECK(!state_dirty());                       // save consumed the dirty flag
+  patch_autosave_tick(t);                      // sees the edit: starts the quiet timer
+  CHECK(state_dirty());
+  patch_autosave_tick(t += 2000);              // still within the 3 s pause
+  CHECK(state_dirty());
+  patch_autosave_tick(t += 1100);              // quiet for 3.1 s -> save
+  CHECK(!state_dirty());
   StoreBlob saved;
   storage_port_read(off, &saved, sizeof(saved));
   CHECK(blob_verify(saved));
@@ -1225,23 +1231,39 @@ static void test_patch_autosave() {
   // Clean state: later ticks must not touch storage again.
   EEPROM.data[off] ^= 0xA5;                    // sentinel a rewrite would undo
   const uint8_t sentinel = EEPROM.data[off];
-  patch_autosave_tick(10001000u);   // times in ms
-  patch_autosave_tick(10005000u);   // past the 3 s limit, but nothing to save
+  for (int i = 0; i < 10; i++) patch_autosave_tick(t += 1000);
   CHECK(EEPROM.data[off] == sentinel);
 
-  // A new edit is saved again.
-  mark_dirty();
-  patch_autosave_tick(10006000u);
+  // Continuous editing (an edit every 100 ms for 10 s) defers the save...
+  for (int i = 0; i < 100; i++) { mark_dirty(); patch_autosave_tick(t += 100); }
+  CHECK(state_dirty());
+  CHECK(EEPROM.data[off] == sentinel);
+  // ...to one save once the knob stops.
+  patch_autosave_tick(t += 3100);
   CHECK(!state_dirty());
   CHECK(EEPROM.data[off] != sentinel);
+  suite_ok("patch: autosave debounce");
+}
 
-  // ...but no sooner than 3 s after the previous save.
-  mark_dirty();
-  patch_autosave_tick(10007000u);
-  CHECK(state_dirty());
-  patch_autosave_tick(10009500u);
-  CHECK(!state_dirty());
-  suite_ok("patch: autosave clears dirty");
+// Patch use cases copy engine state only inside a balanced engine lock.
+static void test_patch_engine_lock() {
+  patch_save(SLOT_BANK1);
+  int before = mock_irq_mask_count;
+  CHECK(patch_load(SLOT_BANK1));
+  CHECK(mock_irq_mask_count == before + 1);
+  CHECK(mock_irq_masked == 0);
+  before = mock_irq_mask_count;
+  patch_save(SLOT_BANK2);
+  CHECK(mock_irq_mask_count == before + 1 && mock_irq_masked == 0);
+  before = mock_irq_mask_count;
+  patch_defaults();
+  CHECK(mock_irq_mask_count == before + 1 && mock_irq_masked == 0);
+  // An invalid slot is rejected before taking the lock.
+  EEPROM.data[store_slot_offset(SLOT_BANK2)] ^= 0xFF;
+  before = mock_irq_mask_count;
+  CHECK(!patch_load(SLOT_BANK2));
+  CHECK(mock_irq_mask_count == before);
+  suite_ok("patch: engine lock");
 }
 
 static void ext_clock_start(uint8_t ppqn) {
@@ -1446,6 +1468,7 @@ int main() {
   test_blob_golden();
   test_storage_roundtrip();
   test_patch_autosave();
+  test_patch_engine_lock();
   test_clock_external_robust();
   test_channel_ext_gate_stop();
   test_clock_external_interp();

@@ -19,8 +19,11 @@
 inline void pinMode(uint8_t, uint8_t) {}
 inline void digitalWrite(uint8_t, uint8_t) {}
 inline int  digitalRead(uint8_t) { return HIGH; }
-inline void noInterrupts() {}
-inline void interrupts() {}
+// Interrupt masking is observable so tests can check engine-lock pairing.
+extern int mock_irq_masked;        // current nesting depth (must return to 0)
+extern int mock_irq_mask_count;    // total noInterrupts() calls
+inline void noInterrupts() { mock_irq_masked++; mock_irq_mask_count++; }
+inline void interrupts() { mock_irq_masked--; }
 inline void delay(uint32_t) {}
 inline void delayMicroseconds(uint32_t) {}
 
