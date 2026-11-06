@@ -17,7 +17,7 @@ pass while the firmware is broken. The suite must exercise shipped code.
   (`test/mock/Arduino.h`, `test/mock/EEPROM.h`, `test/mock_hw.cpp`).
 - Assertions use the `CHECK(cond)` macro in `test/test_main.cpp`, run through
   public APIs only — no production logic duplicated in tests. Current gate:
-  `2368 checks, 0 failures` (count grows; never regress).
+  `2449 checks, 0 failures` (count grows; never regress).
 - Coverage anchors: Euclidean reference patterns + property sweep, engine
   modes, clock/swing math, `StoreBlob` golden bytes + round-trip +
   version rejection, menu get/set/label suites.

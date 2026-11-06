@@ -1,4 +1,5 @@
 #include "app/storage_port.h"
+#include <Arduino.h>
 #include <EEPROM.h>
 
 // Infra adapter: the app-declared storage port, bound to EEPROM. No format,
@@ -14,3 +15,9 @@ void storage_port_write(uint32_t offset, const void *src, size_t n) {
   const uint8_t *s = (const uint8_t *)src;
   for (size_t i = 0; i < n; i++) EEPROM.put(offset + i, s[i]);
 }
+
+// The control tick (IntervalTimer) and TR1 clock ISR both touch engine state;
+// masking all interrupts for the few microseconds of a struct copy is the
+// simplest correct exclusion. A pending timer tick runs right after unlock.
+void engine_lock() { noInterrupts(); }
+void engine_unlock() { interrupts(); }

@@ -27,7 +27,7 @@ make size                 # flash/RAM report
 
 - `make test` runs `proof` first, then builds `test/test_main.cpp` plus the
   **real** production TUs against mocks and executes `build/test_pnc`.
-  Expect `2368 checks, 0 failures` (count grows as tests are added).
+  Expect `2449 checks, 0 failures` (count grows as tests are added).
 - CI (`.github/workflows/build.yml`) runs `make test`, then both Teensy
   builds, on every PR/push; `v*` tags additionally cut a GitHub release and
   publish hexes to `docs/firmware/` for the web flasher. **Never commit

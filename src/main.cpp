@@ -26,10 +26,13 @@ static void control_tick() {
   uint32_t delta = masterClock.take_delta();
   // App computes (no I/O); infra emits. The env carries the globals the
   // engine needs instead of it reading them itself.
-  const EngineEnv env = { USER_SCALES,
-                          masterClock.source ? masterClock.measured_bpm_cent()
-                                             : masterClock.bpm_cent,
-                          masterClock.source };
+  EngineEnv env = { USER_SCALES,
+                    masterClock.source ? masterClock.measured_bpm_cent()
+                                       : masterClock.bpm_cent,
+                    masterClock.source };
+  env.cv1_12 = hal_input_cv1_raw();   // full resolution for the quantiser
+  env.cv2_12 = hal_input_cv2_raw();
+  env.cv_hires = 1;
   channels_update(delta, hal_input_cv1(), hal_input_cv2(), env);
   uint16_t outs[NUM_OUTPUTS];
   uint8_t dirty = channels_take_outputs(outs);
@@ -50,6 +53,12 @@ void setup() {
   pinMode(PIN_CK_IN, INPUT_PULLDOWN);
   attachInterrupt(digitalPinToInterrupt(PIN_CK_IN), ck_isr, RISING);
 #endif
+  // attachInterrupt leaves the GPIO IRQ at the default priority (128), below
+  // the control timer (16), so clock edges were timestamped late whenever a
+  // tick was running. ck_isr is a few instructions (timestamp + count): run
+  // it above everything so tempo measurement sees the true edge time. This
+  // also means tick() can never interrupt a half-finished pulse update.
+  NVIC_SET_PRIORITY(IRQ_GPIO6789, 0);
   ctrl_timer.begin(control_tick, (uint32_t)(1000000 / CONTROL_RATE_HZ));
   ctrl_timer.priority(16);
   Serial.println("pnc: setup done");
@@ -67,7 +76,9 @@ void setup() {
 }
 
 static uint32_t last_beat_ms = 0;
+#if PNC_LOG_CV
 static uint32_t last_cvlog_ms = 0;
+#endif
 
 void loop() {
 #if PNC_LOG_CV

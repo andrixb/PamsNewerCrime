@@ -34,6 +34,12 @@ private:
   volatile uint8_t ext_dt_count = 0;
   volatile uint32_t ext_dt_sum = 0;
   volatile float ext_avg_us = 0;            // rolling average of the last EXT_DT_HIST pulse intervals
+  // Set by tick() when the clock times out; the pulse ISR (sole writer of the
+  // interval history) then starts measuring afresh on the next edge.
+  volatile bool ext_restart = false;
+  // Interpolation between pulses (tick() context only).
+  uint32_t ext_ahead = 0;        // units emitted since the last pulse (< one pulse)
+  uint64_t ext_interp_acc = 0;   // fractional unit accumulator (units * us)
   uint16_t ext_bpm_cent = 0;
 };
 
