@@ -205,7 +205,10 @@ static uint32_t div_period(const ChannelParams &p) {
     else if (f < -1) per /= (uint32_t)(-f);
   }
   if (per < 4) per = 4;              // ~x1024 max multiplication against 1bar
-  if (per > 24576ULL * 4096) per = 24576ULL * 4096;
+  // Upper bound: the engine computes x*256 and phase*period (x, phase < 256)
+  // in uint32, so period must stay <= UINT32_MAX/256 (~/682 of a quarter).
+  // Larger combined divisions (e.g. /32 x /32) are capped there.
+  if (per > 0xFFFFFFFFULL / 256) per = 0xFFFFFFFFULL / 256;
   return (uint32_t)per;
 }
 

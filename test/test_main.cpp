@@ -332,6 +332,20 @@ static void test_channel_div() {
   c.p.mode = MODE_DIV; c.p.div_a = -32; c.p.div_b = -32; c.p.width = 64; c.p.slew = 0;
   drive(1024);
   CHECK(c.event_count == 1024u * 96u / 24u);   // total units / period (period clamps to 24)
+
+  // Extreme divide (/32 x /32) caps at UINT32_MAX/256 so the gate math does
+  // not overflow: 50% width with a 50% delay must give a 50% duty gate.
+  channels_init(DEFAULT_RATIO);
+  c.p.mode = MODE_DIV; c.p.div_a = 32; c.p.div_b = 32; c.p.width = 128;
+  c.p.delay = 128; c.p.slew = 0;
+  const uint32_t cap = 0xFFFFFFFFu / 256;
+  const uint32_t step = cap / 1000;     // 1000 steps stay inside one cycle
+  drive(1, cap - 10);                   // just before the first event
+  drive(2, 10);                         // fire it
+  int on = 0;
+  for (int t = 0; t < 1000; t++) { drive(1, step); if (c.gate_state) on++; }
+  CHECK(c.event_count == 1);
+  CHECK(on >= 495 && on <= 505);
   suite_ok("channel: clock div/mult");
 }
 
@@ -1159,6 +1173,37 @@ static void test_storage_roundtrip() {
   restore_state(odd);
   CHECK(masterClock.swing == 63);
   CHECK(DEFAULT_RATIO == keep_ratio);
+
+  // Out-of-range channel/master fields are clamped on load, and the engine
+  // then runs on them without indexing past its tables.
+  StoreBlob bad = b1;
+  bad.master.bpm_cent = 60000; bad.master.source = 7; bad.master.ext_ppqn = 0;
+  ChannelParams &bp = bad.ch[1];
+  bp.ratio = 200; bp.mode = 99; bp.wave = 42; bp.scale = 250;
+  bp.cv_min = 9000; bp.cv_max = 20000; bp.prob = 180;
+  bp.eucl_len = 0; bp.eucl_fill = 40; bp.eucl_rot = 60; bp.step_len = 0;
+  bp.cv_src1 = 77; bp.cv_in1 = 30; bp.logic_op = 9; bp.logic_src = 9;
+  bp.div_a = 100; bp.div_b = -100; bp.quant_src = 30; bp.ratchets = 40;
+  bp.xop = 50; bp.xsrc = 30; bp.flex = 20; bp.step_prob[3] = 255;
+  restore_state(bad);
+  const ChannelParams &rp = channels[1].p;
+  CHECK(masterClock.bpm_cent == BPM_MAX && masterClock.source == 1);
+  CHECK(masterClock.ext_ppqn == 1);
+  CHECK(rp.ratio == RATIO_COUNT - 1 && rp.mode == MODE_OFF && rp.wave == LFO_SINE);
+  CHECK(rp.scale == 0 && rp.prob == 100);
+  CHECK(rp.cv_min == 9000 && rp.cv_max == DAC_MAX_MV);
+  CHECK(rp.eucl_len == 1 && rp.eucl_fill == 1 && rp.eucl_rot == 0 && rp.step_len == 1);
+  CHECK(rp.cv_src1 == CVP_NONE && rp.cv_in1 == 0);
+  CHECK(rp.logic_op == LOGIC_OFF && rp.logic_src == 0);
+  CHECK(rp.div_a == 32 && rp.div_b == -32 && rp.quant_src == 0 && rp.ratchets == 16);
+  CHECK(rp.xop == XOP_NONE && rp.xsrc == 0 && rp.flex == FLEX_NONE);
+  CHECK(rp.step_prob[3] == 100);
+  for (int m = 0; m < MODE_LAST; m++) {         // every mode runs on the result
+    channels[1].p.mode = (uint8_t)m;
+    drive(50);
+  }
+  CHECK(channels[1].out_mv <= DAC_MAX_MV);
+  masterClock = MasterClock{};
   suite_ok("storage: round-trip");
 }
 
