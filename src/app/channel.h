@@ -24,7 +24,7 @@ struct Channel {
   uint16_t ev_off;   // flex: pending fire offset (256ths of cycle)
   uint8_t pend;      // flex: delayed fire pending
   uint16_t rate256;  // flex: accel rate multiplier (256 = 1x)
-  uint32_t gate_rem; // external-source gate timer (ticks remaining high)
+  uint32_t gate_rem; // ext clock, no tempo yet: fallback trigger ticks remaining
   uint8_t out_dirty; // output stage: set when out_mv needs a DAC write
 };
 

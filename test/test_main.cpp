@@ -1246,6 +1246,82 @@ static void test_channel_ext_gate_stop() {
   suite_ok("channel: external gate stops");
 }
 
+// External clock phase is interpolated between pulses and snapped on each.
+static void test_clock_external_interp() {
+  const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+  auto tick_ms = [](int ms, uint32_t *sum) {
+    for (int i = 0; i < ms; i++) {
+      mock_time_us += 1000;
+      masterClock.tick();
+      uint32_t d = masterClock.take_delta();
+      if (sum) *sum += d;
+    }
+  };
+
+  // Steady 120 BPM, 1 PPQN: phase moves between pulses, and the running total
+  // at every pulse tick is exactly n quarters.
+  ext_clock_start(1);
+  uint32_t total = 0;
+  bool locked = true, moved_between = true;
+  for (int b = 0; b < 8; b++) {
+    masterClock.pulse_external();
+    masterClock.tick();
+    total += masterClock.take_delta();
+    if (total != (uint32_t)(b + 1) * QT) locked = false;
+    uint32_t before = total;
+    tick_ms(499, &total);
+    mock_time_us += 1000;                      // the pulse tick's own millisecond
+    // From the 2nd pulse a tempo is known: ~a full quarter is interpolated.
+    if (b >= 1 && total - before < QT * 9 / 10) moved_between = false;
+  }
+  CHECK(locked);
+  CHECK(moved_between);                        // ~a full quarter interpolated
+
+  // A late pulse: interpolation holds just short of the next pulse position.
+  ext_clock_start(1);
+  for (int b = 0; b < 4; b++) { masterClock.pulse_external(); masterClock.tick();
+                                masterClock.take_delta(); tick_ms(499, nullptr);
+                                mock_time_us += 1000; }
+  masterClock.pulse_external(); masterClock.tick(); masterClock.take_delta();
+  uint32_t ahead = 0;
+  tick_ms(900, &ahead);                        // next pulse is 400 ms late
+  CHECK(ahead == QT - 1);                      // parked right before the beat
+  masterClock.pulse_external(); masterClock.tick();
+  CHECK(masterClock.take_delta() == 1);        // snap completes the quarter
+
+  // Engine: an LFO under 1 PPQN now moves continuously, and a 1/16 pulse
+  // channel gives four gates per beat.
+  ext_clock_start(1);
+  channels_init(16);
+  Channel &lfo = channels[0];
+  lfo.p.mode = MODE_LFO; lfo.p.wave = LFO_TRI; lfo.p.ratio = 16;
+  lfo.p.cv_min = 0; lfo.p.cv_max = 5000; lfo.p.slew = 0;
+  Channel &pul = channels[1];
+  setup_pulse(pul, 10, 128);                   // 1/16, 50% duty
+  channels_reset();
+  int distinct = 0, rises = 0;
+  uint16_t last = 0xFFFF;
+  uint8_t prev_gate = 0;
+  for (int b = 0; b < 6; b++) {
+    masterClock.pulse_external();
+    for (int i = 0; i < 500; i++) {
+      mock_time_us += 1000;
+      masterClock.tick();
+      const EngineEnv env = { USER_SCALES, masterClock.measured_bpm_cent(), 1 };
+      channels_update(masterClock.take_delta(), 0, 0, env);
+      if (b == 5) {
+        if (lfo.out_mv != last) { distinct++; last = lfo.out_mv; }
+        if (pul.gate_state && !prev_gate) rises++;
+      }
+      prev_gate = pul.gate_state;
+    }
+  }
+  CHECK(distinct > 200);
+  CHECK(rises == 4);
+  masterClock = MasterClock{};
+  suite_ok("clock: external interpolation");
+}
+
 int main() {
   test_euclid();
   test_clock();
@@ -1282,6 +1358,7 @@ int main() {
   test_patch_autosave();
   test_clock_external_robust();
   test_channel_ext_gate_stop();
+  test_clock_external_interp();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

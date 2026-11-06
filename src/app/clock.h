@@ -37,6 +37,9 @@ private:
   // Set by tick() when the clock times out; the pulse ISR (sole writer of the
   // interval history) then starts measuring afresh on the next edge.
   volatile bool ext_restart = false;
+  // Interpolation between pulses (tick() context only).
+  uint32_t ext_ahead = 0;        // units emitted since the last pulse (< one pulse)
+  uint64_t ext_interp_acc = 0;   // fractional unit accumulator (units * us)
   uint16_t ext_bpm_cent = 0;
 };
 

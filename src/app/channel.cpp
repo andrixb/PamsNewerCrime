@@ -231,26 +231,12 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     uint32_t period = p.mode == MODE_DIV ? div_period(p)
                                          : RATIO_TABLE[p.ratio].period_x256;
 
-    // External source: pulse/div gates are timed from the measured tempo
-    // because delta is only applied on input pulses, so phase does not advance
-    // between events and the normal windowed gate would stay high.
-    // With no measured tempo yet (first pulses, or after the clock stopped and
-    // timed out) a fired event opens a fixed-length trigger instead.
-    const bool ext_gate = env.source == 1 &&
-                          (p.mode == MODE_PULSE || p.mode == MODE_DIV);
-    uint32_t gate_ticks = 0;
-    if (ext_gate) {
-      if (env.bpm_cent > 0) {
-        const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
-        uint32_t quarter_ms = 6000000u / env.bpm_cent;
-        uint32_t output_ms = (uint32_t)((uint64_t)quarter_ms * period / QT);
-        uint32_t gate_ms = (uint32_t)((uint64_t)output_ms * p.width / 256);
-        if (gate_ms == 0) gate_ms = 1;
-        gate_ticks = gate_ms;
-      } else {
-        gate_ticks = EXT_GATE_FALLBACK_MS * (CONTROL_RATE_HZ / 1000);
-      }
-    }
+    // External clock with no measured tempo (first pulses, or the clock
+    // stopped and timed out): phase then only moves on pulses, so a windowed
+    // gate could sit high indefinitely. Gate modes emit a fixed-length trigger
+    // per fired event instead. With a tempo, phase is interpolated between
+    // pulses (app/clock.cpp) and the normal windowed gates apply.
+    const bool ext_trig = env.source == 1 && env.bpm_cent == 0;
 
     uint32_t phase_off = (uint32_t)p.phase * period / 256;
 
@@ -300,6 +286,11 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         c.sh_val = fire ? 1 : 0;
     }
 
+    if (!ext_trig) c.gate_rem = 0;
+    else if (fire) c.gate_rem = EXT_GATE_FALLBACK_MS * (CONTROL_RATE_HZ / 1000);
+    else if (c.gate_rem > 0) c.gate_rem--;
+    const bool trig_on = c.gate_rem > 0;
+
     uint32_t ph = (c.pos_x256 + phase_off) % period;
     uint32_t ph256 = ph * 256 / period;
     uint16_t frac = 0;
@@ -309,7 +300,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         uint32_t gate_ph = (c.pos_x256 + period - (uint32_t)p.delay * period / 256) % period;
         uint32_t g256 = gate_ph * 256 / period;
         uint32_t w256 = p.width ? p.width : 1;
-        bool on = c.sh_val && g256 < w256;
+        bool on = ext_trig ? trig_on : (c.sh_val && g256 < w256);
         c.gate_state = on;
         frac = on ? 2048 : 0;
         break;
@@ -318,7 +309,8 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         uint8_t n = p.ratchets ? constrain((int)p.ratchets, 1, 16) : 1;
         uint32_t sub = 256 / n;
         uint32_t r256 = (ph256 % sub) * 256 / sub;
-        bool on = c.sh_val && r256 < (uint32_t)(p.width ? p.width : 64);
+        bool on = ext_trig ? trig_on
+                           : (c.sh_val && r256 < (uint32_t)(p.width ? p.width : 64));
         c.gate_state = on;
         frac = on ? 2048 : 0;
         break;
@@ -409,7 +401,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         uint32_t gate_ph = (c.pos_x256 + period - (uint32_t)p.delay * period / 256) % period;
         uint32_t g256 = gate_ph * 256 / period;
         uint32_t w256 = p.width ? p.width : 1;
-        bool own = c.sh_val && g256 < w256;
+        bool own = ext_trig ? trig_on : (c.sh_val && g256 < w256);
         bool other = (p.logic_src >= 1 && p.logic_src <= NUM_OUTPUTS)
                      && channels[p.logic_src - 1].gate_state;
         bool on;
@@ -462,21 +454,6 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
       }
       default:
         break;
-    }
-
-    // For external clocks the phase only advances on input pulses, so a simple
-    // windowed gate would stay high for ratios where delta is a multiple of the
-    // channel period (e.g. 1/4 at 1 PPQN). Use a tempo-derived timer instead.
-    // The timer is the only gate source here, so once it expires the output
-    // stays low (a stopped clock can never leave a gate latched high).
-    if (ext_gate) {
-      if (fire) {
-        c.gate_rem = gate_ticks;
-      } else if (c.gate_rem > 0) {
-        c.gate_rem--;
-      }
-      c.gate_state = c.gate_rem > 0;
-      frac = c.gate_state ? 2048 : 0;
     }
 
     uint16_t mv = scaled(p, frac);
