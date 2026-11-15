@@ -332,23 +332,41 @@ static void test_channel_div() {
   c.p.mode = MODE_DIV; c.p.div_a = -32; c.p.div_b = -32; c.p.width = 64; c.p.slew = 0;
   drive(1024);
   CHECK(c.event_count == 1024u * 96u / 24u);   // total units / period (period clamps to 24)
+
+  // Extreme divide (/32 x /32) caps at UINT32_MAX/256 so the gate math does
+  // not overflow: 50% width with a 50% delay must give a 50% duty gate.
+  channels_init(DEFAULT_RATIO);
+  c.p.mode = MODE_DIV; c.p.div_a = 32; c.p.div_b = 32; c.p.width = 128;
+  c.p.delay = 128; c.p.slew = 0;
+  const uint32_t cap = 0xFFFFFFFFu / 256;
+  const uint32_t step = cap / 1000;     // 1000 steps stay inside one cycle
+  drive(1, cap - 10);                   // just before the first event
+  drive(2, 10);                         // fire it
+  int on = 0;
+  for (int t = 0; t < 1000; t++) { drive(1, step); if (c.gate_state) on++; }
+  CHECK(c.event_count == 1);
+  CHECK(on >= 495 && on <= 505);
   suite_ok("channel: clock div/mult");
+}
+
+// 1 V/oct grid: semitone k sits at round(k * 1000 / 12) mV; -1 if off-grid.
+static int grid_semi(uint16_t mv) {
+  int k = (mv * 12 + 500) / 1000;
+  return ((k * 1000 + 6) / 12 == mv) ? k : -1;
 }
 
 static void test_channel_note() {
   channels_init(DEFAULT_RATIO);
   Channel &c = channels[0];
   c.p.mode = MODE_NOTE; c.p.ratio = 16; c.p.scale = 1;   // major
-  c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0;       // 30 semitones, 83 mV/semi
+  c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0;       // semitones 0..29 fit
 
   static const bool in_major[12] = {1,0,1,0,1,1,0,1,0,1,0,1};
   bool seen[31] = { false };
   bool off_grid = false;
   for (uint32_t t = 0; t < 256; t++) {
     drive(1);
-    int best = -1;
-    for (int k = 0; k <= 30; k++)
-      if (abs((int)c.out_mv - k * 83) <= 3) best = k;
+    int best = grid_semi(c.out_mv);       // exact 1 V/oct grid note, or -1
     if (best < 0 || !in_major[best % 12]) off_grid = true;
     else seen[best] = true;
   }
@@ -356,6 +374,25 @@ static void test_channel_note() {
   int n = 0;
   for (int k = 0; k <= 30; k++) if (seen[k]) n++;
   CHECK(n == 18);                       // all 18 major pitches over 2.5 octaves are hit
+
+  // Full 10 V chromatic window: the ramp walks all 121 grid notes, top = 10 V.
+  channels_init(DEFAULT_RATIO);
+  c.p.mode = MODE_NOTE; c.p.ratio = 16; c.p.scale = 0;
+  c.p.cv_min = 0; c.p.cv_max = 10000; c.p.slew = 0;
+  bool hit[121] = { false };
+  bool on_grid = true;
+  uint16_t top = 0;
+  for (uint32_t t = 0; t < 24576 / 4; t++) {
+    drive(1, 4);
+    int k = grid_semi(c.out_mv);
+    if (k < 0 || k > 120) on_grid = false; else hit[k] = true;
+    if (c.out_mv > top) top = c.out_mv;
+  }
+  int all = 0;
+  for (int k = 0; k <= 120; k++) if (hit[k]) all++;
+  CHECK(on_grid);
+  CHECK(all == 121);
+  CHECK(top == 10000);
   suite_ok("channel: note quantiser");
 }
 
@@ -461,15 +498,28 @@ static void test_channel_quant_app() {
   bool off_grid = false, nonmono = false;
   for (int s = 0; s <= 255; s++) {
     channels_update(0, (uint8_t)s, 0, {USER_SCALES});
-    int best = -1;
-    for (int k = 0; k <= 30; k++)
-      if (abs((int)c.out_mv - k * 83) <= 3) best = k;
+    int best = grid_semi(c.out_mv);       // exact 1 V/oct grid note, or -1
     if (best < 0 || !in_major[best % 12]) off_grid = true;
     if (prev_mv >= 0 && (int)c.out_mv < prev_mv) nonmono = true;
     prev_mv = c.out_mv;
   }
   CHECK(!off_grid);
   CHECK(!nonmono);
+
+  // 12-bit input over a full 10 V chromatic window: the CV for semitone k
+  // (k/120 of full scale) must land exactly on note k, for all 121 notes.
+  // 8 bits (~39 mV/step) cannot place every semitone centre.
+  c.p.cv_max = 10000; c.p.scale = 0;          // chromatic
+  bool exact = true;
+  for (int k = 0; k <= 120; k++) {
+    EngineEnv env = { USER_SCALES };
+    env.cv1_12 = (uint16_t)((k * 4095 + 60) / 120);
+    env.cv_hires = 1;
+    channels_update(0, 0, 0, env);
+    if (grid_semi(c.out_mv) != k) exact = false;
+  }
+  CHECK(exact);
+  CHECK(c.out_mv == 10000);
   suite_ok("channel: quantiser app");
 }
 
@@ -502,6 +552,43 @@ static void test_channel_lfo() {
     CHECK(lo >= 0 && hi <= 5000);
     CHECK(hi > 4000 && lo < 100);   // full excursion within the window
   }
+
+  // Sine: full 0..cv_max excursion, peak mid-cycle, no flat dead zone (the old
+  // table peaked at ~70% and sat at 0 for the last eighth of every cycle).
+  channels_init(DEFAULT_RATIO);
+  c.p.mode = MODE_LFO; c.p.ratio = 16; c.p.wave = LFO_SINE;
+  c.p.cv_min = 0; c.p.cv_max = 10000; c.p.slew = 0;
+  channels_reset();
+  uint16_t sv[256];
+  for (uint32_t t = 0; t < 256; t++) { drive(1); sv[t] = c.out_mv; }
+  uint16_t smin = 65535, smax = 0;
+  int zeros = 0, peak_at = 0;
+  for (int t = 0; t < 256; t++) {
+    if (sv[t] < smin) smin = sv[t];
+    if (sv[t] > smax) { smax = sv[t]; peak_at = t; }
+    if (sv[t] == 0) zeros++;
+  }
+  CHECK(smin == 0 && smax == 10000);
+  CHECK(zeros <= 2);                     // touches zero, does not dwell there
+  CHECK(peak_at >= 126 && peak_at <= 130);
+  bool sym = true;                       // mirror-symmetric about the peak
+  for (int k = 1; k < 120; k++)
+    if (abs((int)sv[peak_at - k] - (int)sv[peak_at + k]) > 60) sym = false;
+  CHECK(sym);
+
+  // Slow LFO resolution: a 4-bar triangle at 120 BPM (~8 s) used to move in
+  // at most 256 steps per cycle; 16-bit phase gives thousands of levels.
+  channels_init(DEFAULT_RATIO);
+  c.p.mode = MODE_LFO; c.p.ratio = 23; c.p.wave = LFO_TRI; c.p.skew = 128;
+  c.p.cv_min = 0; c.p.cv_max = 10000; c.p.slew = 0;
+  channels_reset();
+  int levels = 0;
+  uint16_t lastv = 0xFFFF;
+  for (uint32_t t = 0; t < 393216 / 49; t++) {
+    drive(1, 49);                        // ~120 BPM in x256 units per ms
+    if (c.out_mv != lastv) { levels++; lastv = c.out_mv; }
+  }
+  CHECK(levels > 2000);
   suite_ok("channel: LFO waves");
 }
 
@@ -754,7 +841,24 @@ static void test_channel_slew() {
   s.p.mode = MODE_LFO; s.p.ratio = 16; s.p.wave = LFO_SQR; s.p.skew = 128;
   s.p.cv_min = 0; s.p.cv_max = 5000; s.p.slew = 16;
   drive(1);
-  CHECK(s.out_mv == 312);                // one lag step: 5000*16/256
+  CHECK(s.out_mv == 313);                // one lag step: 5000*16/256 = 312.5, rounded
+
+  // Slow slew must actually reach its target, rising and falling (whole-mV
+  // state used to stall up to 256/slew mV short on the way up).
+  static const uint8_t slews[] = { 1, 8, 64 };
+  for (uint8_t slew : slews) {
+    channels_init(DEFAULT_RATIO);
+    Channel &k = channels[0];
+    k.p.mode = MODE_STEP; k.p.cv_min = 0; k.p.cv_max = 10000; k.p.slew = slew;
+    for (int i = 0; i < MAX_STEPS; i++) k.p.steps[i] = 255;
+    k.sh_val = 255;                      // delta 0: hold the step value
+    drive(20000, 0);
+    CHECK(k.out_mv >= 9999);
+    for (int i = 0; i < MAX_STEPS; i++) k.p.steps[i] = 0;
+    k.sh_val = 0;
+    drive(20000, 0);
+    CHECK(k.out_mv <= 1);
+  }
   suite_ok("channel: slew limiter");
 }
 
@@ -768,11 +872,24 @@ static void test_channel_gquant() {
   bool off_grid = false;
   for (uint32_t t = 0; t < 256; t++) {
     drive(1);
-    int semi = c.out_mv / 83;
-    if (c.out_mv % 83 != 0) off_grid = true;
-    else if (semi < 0 || semi > 30 || !in_major[semi % 12]) off_grid = true;
+    int semi = grid_semi(c.out_mv);
+    if (semi < 0 || c.out_mv > 2490 || !in_major[semi % 12]) off_grid = true;
   }
   CHECK(!off_grid);
+
+  // Accuracy at the top of a full 10 V window: 10 V is exactly 120 semitones.
+  channels_init(DEFAULT_RATIO);
+  c.p.mode = MODE_STEP; c.p.cv_min = 0; c.p.cv_max = 10000; c.p.slew = 0;
+  c.p.scale = 0; c.p.gquant = 1;         // chromatic
+  for (int i = 0; i < MAX_STEPS; i++) c.p.steps[i] = 255;
+  c.sh_val = 255;                        // delta 0: hold the step value
+  drive(2, 0);
+  CHECK(c.out_mv == 10000);
+  // 5 V (60 semitones) lands exactly on 5000 mV.
+  for (int i = 0; i < MAX_STEPS; i++) c.p.steps[i] = 128;   // ~5020 mV in
+  c.sh_val = 128;
+  drive(1, 0);
+  CHECK(c.out_mv == 5000);
   suite_ok("channel: global quantise");
 }
 
@@ -1056,10 +1173,267 @@ static void test_storage_roundtrip() {
   restore_state(odd);
   CHECK(masterClock.swing == 63);
   CHECK(DEFAULT_RATIO == keep_ratio);
+
+  // Out-of-range channel/master fields are clamped on load, and the engine
+  // then runs on them without indexing past its tables.
+  StoreBlob bad = b1;
+  bad.master.bpm_cent = 60000; bad.master.source = 7; bad.master.ext_ppqn = 0;
+  ChannelParams &bp = bad.ch[1];
+  bp.ratio = 200; bp.mode = 99; bp.wave = 42; bp.scale = 250;
+  bp.cv_min = 9000; bp.cv_max = 20000; bp.prob = 180;
+  bp.eucl_len = 0; bp.eucl_fill = 40; bp.eucl_rot = 60; bp.step_len = 0;
+  bp.cv_src1 = 77; bp.cv_in1 = 30; bp.logic_op = 9; bp.logic_src = 9;
+  bp.div_a = 100; bp.div_b = -100; bp.quant_src = 30; bp.ratchets = 40;
+  bp.xop = 50; bp.xsrc = 30; bp.flex = 20; bp.step_prob[3] = 255;
+  restore_state(bad);
+  const ChannelParams &rp = channels[1].p;
+  CHECK(masterClock.bpm_cent == BPM_MAX && masterClock.source == 1);
+  CHECK(masterClock.ext_ppqn == 1);
+  CHECK(rp.ratio == RATIO_COUNT - 1 && rp.mode == MODE_OFF && rp.wave == LFO_SINE);
+  CHECK(rp.scale == 0 && rp.prob == 100);
+  CHECK(rp.cv_min == 9000 && rp.cv_max == DAC_MAX_MV);
+  CHECK(rp.eucl_len == 1 && rp.eucl_fill == 1 && rp.eucl_rot == 0 && rp.step_len == 1);
+  CHECK(rp.cv_src1 == CVP_NONE && rp.cv_in1 == 0);
+  CHECK(rp.logic_op == LOGIC_OFF && rp.logic_src == 0);
+  CHECK(rp.div_a == 32 && rp.div_b == -32 && rp.quant_src == 0 && rp.ratchets == 16);
+  CHECK(rp.xop == XOP_NONE && rp.xsrc == 0 && rp.flex == FLEX_NONE);
+  CHECK(rp.step_prob[3] == 100);
+  for (int m = 0; m < MODE_LAST; m++) {         // every mode runs on the result
+    channels[1].p.mode = (uint8_t)m;
+    drive(50);
+  }
+  CHECK(channels[1].out_mv <= DAC_MAX_MV);
+  masterClock = MasterClock{};
   suite_ok("storage: round-trip");
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// regression suites (review batch 1)
+// ---------------------------------------------------------------------------
+
+// Autosave writes SLOT_ACTIVE once per burst of edits, ~3 s after the last
+// one, and never again while nothing changes.
+static void test_patch_autosave() {
+  const uint32_t off = store_slot_offset(SLOT_ACTIVE);
+  uint32_t t = 10000000u;                      // ms
+  mark_dirty();
+  patch_autosave_tick(t);                      // sees the edit: starts the quiet timer
+  CHECK(state_dirty());
+  patch_autosave_tick(t += 2000);              // still within the 3 s pause
+  CHECK(state_dirty());
+  patch_autosave_tick(t += 1100);              // quiet for 3.1 s -> save
+  CHECK(!state_dirty());
+  StoreBlob saved;
+  storage_port_read(off, &saved, sizeof(saved));
+  CHECK(blob_verify(saved));
+
+  // Clean state: later ticks must not touch storage again.
+  EEPROM.data[off] ^= 0xA5;                    // sentinel a rewrite would undo
+  const uint8_t sentinel = EEPROM.data[off];
+  for (int i = 0; i < 10; i++) patch_autosave_tick(t += 1000);
+  CHECK(EEPROM.data[off] == sentinel);
+
+  // Continuous editing (an edit every 100 ms for 10 s) defers the save...
+  for (int i = 0; i < 100; i++) { mark_dirty(); patch_autosave_tick(t += 100); }
+  CHECK(state_dirty());
+  CHECK(EEPROM.data[off] == sentinel);
+  // ...to one save once the knob stops.
+  patch_autosave_tick(t += 3100);
+  CHECK(!state_dirty());
+  CHECK(EEPROM.data[off] != sentinel);
+  suite_ok("patch: autosave debounce");
+}
+
+// Patch use cases copy engine state only inside a balanced engine lock.
+static void test_patch_engine_lock() {
+  patch_save(SLOT_BANK1);
+  int before = mock_irq_mask_count;
+  CHECK(patch_load(SLOT_BANK1));
+  CHECK(mock_irq_mask_count == before + 1);
+  CHECK(mock_irq_masked == 0);
+  before = mock_irq_mask_count;
+  patch_save(SLOT_BANK2);
+  CHECK(mock_irq_mask_count == before + 1 && mock_irq_masked == 0);
+  before = mock_irq_mask_count;
+  patch_defaults();
+  CHECK(mock_irq_mask_count == before + 1 && mock_irq_masked == 0);
+  // An invalid slot is rejected before taking the lock.
+  EEPROM.data[store_slot_offset(SLOT_BANK2)] ^= 0xFF;
+  before = mock_irq_mask_count;
+  CHECK(!patch_load(SLOT_BANK2));
+  CHECK(mock_irq_mask_count == before);
+  suite_ok("patch: engine lock");
+}
+
+static void ext_clock_start(uint8_t ppqn) {
+  masterClock = MasterClock{};
+  masterClock.source = 1;
+  masterClock.ext_ppqn = ppqn;
+  masterClock.reset_phase();
+  mock_time_us = 1000000;
+}
+
+// Glitch edges are rejected before they count; a timeout restarts measurement.
+static void test_clock_external_robust() {
+  const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+
+  // A bounce 50us after a real edge must not advance the clock.
+  ext_clock_start(1);
+  masterClock.pulse_external();
+  mock_time_us += 50;
+  masterClock.pulse_external();                // glitch
+  masterClock.tick();
+  CHECK(masterClock.take_delta() == QT);       // one quarter, not two
+
+  // ...nor become the reference for the next interval.
+  ext_clock_start(1);
+  for (int i = 0; i < 4; i++) { masterClock.pulse_external(); mock_time_us += 500000u; }
+  masterClock.pulse_external();
+  mock_time_us += 60;
+  masterClock.pulse_external();                // glitch
+  mock_time_us += 500000u - 60;
+  masterClock.pulse_external();
+  masterClock.tick();
+  CHECK(masterClock.measured_period_us() == 500000u);
+
+  // Stop the clock long enough to time out, then resume at a new tempo: the
+  // gap must not be averaged in, so the first interval already reads true.
+  ext_clock_start(24);
+  const uint32_t p120 = 60000000u / (120u * 24u);
+  for (int i = 0; i < 20; i++) {
+    mock_time_us += p120;
+    masterClock.pulse_external();
+    masterClock.tick();
+  }
+  mock_time_us += 2000000u;                    // 2 s silence
+  masterClock.tick();
+  CHECK(masterClock.measured_bpm_cent() == 0);
+  const uint32_t p90 = 60000000u / (90u * 24u);
+  masterClock.pulse_external();                // restart edge
+  mock_time_us += p90;
+  masterClock.pulse_external();
+  masterClock.tick();
+  CHECK(masterClock.measured_bpm_cent() >= 8950 && masterClock.measured_bpm_cent() <= 9050);
+  suite_ok("clock: external glitch/restart");
+}
+
+// PULSE gates under external clock never latch high once the clock stops.
+static void test_channel_ext_gate_stop() {
+  ext_clock_start(1);
+  channels_init(16);
+  Channel &c = channels[0];
+  setup_pulse(c, 16, 128);                     // 1/4, 50% duty
+  channels_reset();
+  auto run_ms = [&](int ms) {
+    for (int i = 0; i < ms; i++) {
+      mock_time_us += 1000;
+      masterClock.tick();
+      const EngineEnv env = { USER_SCALES, masterClock.measured_bpm_cent(), 1 };
+      channels_update(masterClock.take_delta(), 0, 0, env);
+    }
+  };
+  int highs = 0;
+  for (int b = 0; b < 8; b++) {                // 120 BPM, 1 PPQN
+    masterClock.pulse_external();
+    for (int i = 0; i < 500; i++) { run_ms(1); if (b == 7 && c.gate_state) highs++; }
+  }
+  CHECK(highs >= 245 && highs <= 255);         // ~50% of a 500 ms beat
+  masterClock.pulse_external();
+  run_ms(5);
+  CHECK(c.gate_state && c.out_mv == 5000);     // last pulse still gates
+  run_ms(5000);                                // clock stopped, estimator timed out
+  CHECK(masterClock.measured_bpm_cent() == 0);
+  CHECK(!c.gate_state && c.out_mv == 0);
+
+  // No tempo yet: a pulse opens the fixed fallback trigger, then closes.
+  ext_clock_start(1);
+  channels_reset();
+  masterClock.pulse_external();
+  run_ms(1);
+  CHECK(c.gate_state);
+  run_ms(EXT_GATE_FALLBACK_MS + 1);
+  CHECK(!c.gate_state && c.out_mv == 0);
+  masterClock = MasterClock{};
+  suite_ok("channel: external gate stops");
+}
+
+// External clock phase is interpolated between pulses and snapped on each.
+static void test_clock_external_interp() {
+  const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+  auto tick_ms = [](int ms, uint32_t *sum) {
+    for (int i = 0; i < ms; i++) {
+      mock_time_us += 1000;
+      masterClock.tick();
+      uint32_t d = masterClock.take_delta();
+      if (sum) *sum += d;
+    }
+  };
+
+  // Steady 120 BPM, 1 PPQN: phase moves between pulses, and the running total
+  // at every pulse tick is exactly n quarters.
+  ext_clock_start(1);
+  uint32_t total = 0;
+  bool locked = true, moved_between = true;
+  for (int b = 0; b < 8; b++) {
+    masterClock.pulse_external();
+    masterClock.tick();
+    total += masterClock.take_delta();
+    if (total != (uint32_t)(b + 1) * QT) locked = false;
+    uint32_t before = total;
+    tick_ms(499, &total);
+    mock_time_us += 1000;                      // the pulse tick's own millisecond
+    // From the 2nd pulse a tempo is known: ~a full quarter is interpolated.
+    if (b >= 1 && total - before < QT * 9 / 10) moved_between = false;
+  }
+  CHECK(locked);
+  CHECK(moved_between);                        // ~a full quarter interpolated
+
+  // A late pulse: interpolation holds just short of the next pulse position.
+  ext_clock_start(1);
+  for (int b = 0; b < 4; b++) { masterClock.pulse_external(); masterClock.tick();
+                                masterClock.take_delta(); tick_ms(499, nullptr);
+                                mock_time_us += 1000; }
+  masterClock.pulse_external(); masterClock.tick(); masterClock.take_delta();
+  uint32_t ahead = 0;
+  tick_ms(900, &ahead);                        // next pulse is 400 ms late
+  CHECK(ahead == QT - 1);                      // parked right before the beat
+  masterClock.pulse_external(); masterClock.tick();
+  CHECK(masterClock.take_delta() == 1);        // snap completes the quarter
+
+  // Engine: an LFO under 1 PPQN now moves continuously, and a 1/16 pulse
+  // channel gives four gates per beat.
+  ext_clock_start(1);
+  channels_init(16);
+  Channel &lfo = channels[0];
+  lfo.p.mode = MODE_LFO; lfo.p.wave = LFO_TRI; lfo.p.ratio = 16;
+  lfo.p.cv_min = 0; lfo.p.cv_max = 5000; lfo.p.slew = 0;
+  Channel &pul = channels[1];
+  setup_pulse(pul, 10, 128);                   // 1/16, 50% duty
+  channels_reset();
+  int distinct = 0, rises = 0;
+  uint16_t last = 0xFFFF;
+  uint8_t prev_gate = 0;
+  for (int b = 0; b < 6; b++) {
+    masterClock.pulse_external();
+    for (int i = 0; i < 500; i++) {
+      mock_time_us += 1000;
+      masterClock.tick();
+      const EngineEnv env = { USER_SCALES, masterClock.measured_bpm_cent(), 1 };
+      channels_update(masterClock.take_delta(), 0, 0, env);
+      if (b == 5) {
+        if (lfo.out_mv != last) { distinct++; last = lfo.out_mv; }
+        if (pul.gate_state && !prev_gate) rises++;
+      }
+      prev_gate = pul.gate_state;
+    }
+  }
+  CHECK(distinct > 200);
+  CHECK(rises == 4);
+  masterClock = MasterClock{};
+  suite_ok("clock: external interpolation");
+}
+
 int main() {
   test_euclid();
   test_clock();
@@ -1093,6 +1467,11 @@ int main() {
   test_clock_tempo();
   test_blob_golden();
   test_storage_roundtrip();
+  test_patch_autosave();
+  test_patch_engine_lock();
+  test_clock_external_robust();
+  test_channel_ext_gate_stop();
+  test_clock_external_interp();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

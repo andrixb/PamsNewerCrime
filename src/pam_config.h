@@ -27,6 +27,9 @@
 #define BPM_MIN           1000
 #define BPM_MAX           33000
 #define NUM_BANKS         2
+// External clock, PULSE/DIV: gate length used before a tempo has been
+// measured (first pulses, or after the clock stopped and timed out).
+#define EXT_GATE_FALLBACK_MS 10
 
 // ---------------------------------------------------------------------------
 // Hardware profile: genuine O_C board (14HP original / uO_c 8HP micro),

@@ -33,9 +33,17 @@ public:
       0xA6,             // non-inverted
       0xAF,             // display on
     };
+    // Every SPI transaction (OLED and DAC) masks the control timer IRQ while
+    // it runs. The 1 kHz tick is the only other SPI user (DAC writes), so a
+    // DAC frame can never land while the OLED holds CS low -- and unlike
+    // noInterrupts(), the TR1 clock input stays live during a flush.
+    SPI.usingInterrupt(IRQ_PIT);
+    SPI.beginTransaction(OLED_SPI);
     digitalWrite(PIN_OLED_CS, LOW);
-    xfer(false, init_seq, sizeof(init_seq));
+    digitalWrite(PIN_OLED_DC, LOW);
+    SPI.transfer(init_seq, nullptr, sizeof(init_seq));
     digitalWrite(PIN_OLED_CS, HIGH);
+    SPI.endTransaction();
   }
   void drawPixel(int16_t x, int16_t y, uint16_t c) override {
     if (x < 0 || y < 0 || x >= 128 || y >= 64) return;
@@ -50,12 +58,16 @@ public:
       if (memcmp(p, q, 128) == 0) continue;
       memcpy(q, p, 128);
       const uint8_t seq[3] = { 0x10, 0x02, (uint8_t)(0xB0 | pg) };
-      noInterrupts();
+      // One transaction per page: command + data with CS held, timer IRQ
+      // masked for its duration (see begin()).
+      SPI.beginTransaction(OLED_SPI);
       digitalWrite(PIN_OLED_CS, LOW);
-      xfer(false, seq, 3);          // command phase (DC low), CS held
-      xfer(true, p, 128);           // data phase (DC high)
+      digitalWrite(PIN_OLED_DC, LOW);   // command phase
+      SPI.transfer(seq, nullptr, 3);
+      digitalWrite(PIN_OLED_DC, HIGH);  // data phase
+      SPI.transfer(p, nullptr, 128);
       digitalWrite(PIN_OLED_CS, HIGH);
-      interrupts();
+      SPI.endTransaction();
       delayMicroseconds(2);
     }
   }
@@ -64,14 +76,10 @@ private:
   uint8_t last[1024];
   // The OLED shares the bus with the DAC8565, which runs transactions at
   // 12 MHz. SH1106 panels glitch above ~4-8 MHz (corrupted bytes = random
-  // dots/lines), so every OLED burst must carry its own SPISettings instead
-  // of inheriting whatever clock the DAC left on the peripheral.
-  void xfer(bool data, const uint8_t *b, size_t n) {
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(PIN_OLED_DC, data ? HIGH : LOW);
-    for (size_t i = 0; i < n; i++) SPI.transfer(b[i]);
-    SPI.endTransaction();
-  }
+  // dots/lines), so every OLED burst carries its own SPISettings instead of
+  // inheriting whatever clock the DAC left on the peripheral.
+  static constexpr uint32_t OLED_HZ = 4000000;
+  const SPISettings OLED_SPI{OLED_HZ, MSBFIRST, SPI_MODE0};
 };
 
 static PncSpiOled oled_spi;

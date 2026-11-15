@@ -14,7 +14,7 @@ struct Channel {
   uint8_t step_idx;
   uint8_t sh_val;
   uint16_t env_t;    // envelope ms counter
-  uint16_t filt_mv;  // slew filter state
+  int32_t filt_x256; // slew filter state, mV << 8 (fraction bits so it settles)
   int16_t wv;        // woggle / random-walk value 0..255
   uint8_t wtar;      // woggle: stepped random target
   uint8_t wsm;       // woggle: smoothed value (chased by wv)
@@ -24,7 +24,7 @@ struct Channel {
   uint16_t ev_off;   // flex: pending fire offset (256ths of cycle)
   uint8_t pend;      // flex: delayed fire pending
   uint16_t rate256;  // flex: accel rate multiplier (256 = 1x)
-  uint32_t gate_rem; // external-source gate timer (ticks remaining high)
+  uint32_t gate_rem; // ext clock, no tempo yet: fallback trigger ticks remaining
   uint8_t out_dirty; // output stage: set when out_mv needs a DAC write
 };
 
@@ -37,6 +37,12 @@ struct EngineEnv {
   const uint16_t *user_scales;
   uint16_t bpm_cent = 0; // effective tempo (internal setpoint or measured external)
   uint8_t source = 0;    // 0 = internal, 1 = external
+  // Optional full-resolution CV jack readings (0..4095, same orientation as
+  // the 8-bit cv1/cv2). The quantiser uses them when cv_hires is set: 8 bits
+  // is ~39 mV per step, close to half a semitone.
+  uint16_t cv1_12 = 0;
+  uint16_t cv2_12 = 0;
+  uint8_t cv_hires = 0;
 };
 
 void channels_init(uint8_t default_ratio);

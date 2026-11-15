@@ -24,6 +24,11 @@ Persistence needs EEPROM on-device but must stay host-testable. Letting
   only the thin adapter touches real EEPROM.
 - This is the template for any future hardware need in `app/`: declare a
   C-linkage-style port in `app/`, implement it in `infra/`.
+- Second port on the same shape (2026-11): `engine_lock()` /
+  `engine_unlock()` in `storage_port.h`, implemented in `hal_storage.cpp` as
+  interrupt masking. Patch use cases (`app/patch.cpp`) run in `loop()` while
+  the 1 kHz ISR uses the same engine state, so capture/restore/defaults copy
+  state only inside the lock; storage I/O stays outside it.
 
 ## Agent notes
 

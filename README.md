@@ -58,7 +58,7 @@ The implementation is original code, written from scratch for Teensy 4 hardware.
   assignable to modulate range / width / phase / delay / prob / ratio / div / skew /
   attack / decay / slew, with signed scale
 - 2 save/load banks + automatic persistence (EEPROM emulation, CRC-checked, autosave
-  after 3 s idle; format v8)
+  after 3 s idle; format v10)
 - 128x64 OLED: a tall right-side voltage meter (smoothed peak level + gate strip,
   one bar per output, filled from the box floor) beside the parameter list; hidden
   on the SYS page

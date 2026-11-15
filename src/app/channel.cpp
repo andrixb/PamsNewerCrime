@@ -6,12 +6,15 @@ static_assert(NUM_OUTPUTS <= 8, "dirty mask in channels_take_outputs is 8 bits")
 
 Channel channels[NUM_OUTPUTS];
 
+// One full sine cycle as a raised cosine, 0 -> 2048 -> 0:
+// round(1024 - 1024*cos(2*pi*i/64)), i = 0..64. Entry 64 repeats entry 0 so
+// wave_value() can interpolate across the wrap without a bounds check.
 static const uint16_t SINE_LUT[65] = {
-  0, 78, 156, 233, 310, 386, 461, 535, 608, 680, 750, 818, 884, 947, 1008, 1066,
-  1120, 1171, 1218, 1261, 1300, 1334, 1364, 1389, 1409, 1424, 1434, 1440, 1440, 1434, 1424, 1409,
-  1389, 1364, 1334, 1300, 1261, 1218, 1171, 1120, 1066, 1008, 947, 884, 818, 750,
-  680, 608, 535, 461, 386, 310, 233, 156, 78, 0,
-  0, 0, 0, 0, 0, 0, 0, 0, 0
+  0, 5, 20, 44, 78, 121, 173, 232, 300, 374, 455, 541, 632,
+  727, 824, 924, 1024, 1124, 1224, 1321, 1416, 1507, 1593, 1674, 1748, 1816,
+  1875, 1927, 1970, 2004, 2028, 2043, 2048, 2043, 2028, 2004, 1970, 1927, 1875,
+  1816, 1748, 1674, 1593, 1507, 1416, 1321, 1224, 1124, 1024, 924, 824, 727,
+  632, 541, 455, 374, 300, 232, 173, 121, 78, 44, 20, 5, 0,
 };
 
 static int quantize_semi(int pos, uint16_t mask) {
@@ -110,7 +113,7 @@ void channels_reset() {
     c.wsm = 128;
     c.last_note = 0;
     c.out_mv = 0;
-    c.filt_mv = 0;
+    c.filt_x256 = 0;
     c.hold_mv = 0;
     c.x_hi = 0;
     c.ev_off = 0;
@@ -153,27 +156,34 @@ static uint8_t rand8() {
   return rng >> 24;
 }
 
-static uint16_t wave_value(uint8_t wave, uint8_t shape, uint32_t ph256) {
-  uint8_t ph = ph256 & 0xFF;
+// ph16: phase within the cycle, 0..65535. Continuous shapes use the full
+// 16 bits (a slow 4-bar LFO used to move in 256 audible steps); `shape`
+// thresholds stay on the 8-bit grid so duty/skew behave exactly as before.
+static uint16_t wave_value(uint8_t wave, uint8_t shape, uint32_t ph16) {
   switch (wave) {
-    case LFO_SINE: return SINE_LUT[ph >> 2];
-    case LFO_TRI: {
-      uint32_t rise = constrain((int16_t)shape, 1, 255);
-      if (ph < rise) return ph * 2048 / rise;
-      return (255 - ph) * 2048 / (256 - rise);
+    case LFO_SINE: {
+      // 64-entry table, interpolated on the low 10 phase bits.
+      const int32_t a = SINE_LUT[ph16 >> 10], b = SINE_LUT[(ph16 >> 10) + 1];
+      return (uint16_t)(a + (b - a) * (int32_t)(ph16 & 1023) / 1024);
     }
-    case LFO_SAW:  return (uint32_t)ph * 2048 / 255;
-    case LFO_SQR:  return ph < shape ? 2048 : 0;
+    case LFO_TRI: {
+      uint32_t rise = (uint32_t)constrain((int16_t)shape, 1, 255) << 8;
+      if (ph16 < rise) return (uint16_t)(ph16 * 2048 / rise);
+      return (uint16_t)((65535 - ph16) * 2048 / (65536 - rise));
+    }
+    case LFO_SAW:  return (uint16_t)(ph16 * 2048 / 65535);
+    case LFO_SQR:  return (ph16 >> 8) < shape ? 2048 : 0;
     case LFO_TRAPZ: {
       // Plateau edges move with `shape`: ramp width = shape/2 at each end.
-      uint32_t ramp = (uint32_t)constrain((int16_t)shape, 1, 127);
-      if (ph < ramp) return ph * 2048 / ramp;
-      if (ph < 256 - ramp) return 2048;
-      return (uint32_t)(255 - ph) * 2048 / ramp;
+      uint32_t ramp = (uint32_t)constrain((int16_t)shape, 1, 127) << 8;
+      if (ph16 < ramp) return (uint16_t)(ph16 * 2048 / ramp);
+      if (ph16 < 65536 - ramp) return 2048;
+      return (uint16_t)((65535 - ph16) * 2048 / ramp);
     }
     case LFO_PARAB: {
-      int32_t x = 2 * (int32_t)ph - 255;
-      return (uint32_t)(4 * 16320 - x * x) * 2048 / (4 * 16320);
+      const int64_t x = 2 * (int64_t)ph16 - 65535;
+      const int64_t full = 65535LL * 65535LL;
+      return (uint16_t)((full - x * x) * 2048 / full);
     }
     default: return 0;
   }
@@ -195,14 +205,38 @@ static uint32_t div_period(const ChannelParams &p) {
     else if (f < -1) per /= (uint32_t)(-f);
   }
   if (per < 4) per = 4;              // ~x1024 max multiplication against 1bar
-  if (per > 24576ULL * 4096) per = 24576ULL * 4096;
+  // Upper bound: the engine computes x*256 and phase*period (x, phase < 256)
+  // in uint32, so period must stay <= UINT32_MAX/256 (~/682 of a quarter).
+  // Larger combined divisions (e.g. /32 x /32) are capped there.
+  if (per > 0xFFFFFFFFULL / 256) per = 0xFFFFFFFFULL / 256;
   return (uint32_t)per;
 }
 
-static int32_t scaled(const ChannelParams &p, uint16_t frac) {
-  int32_t v = (int32_t)p.cv_min + (int32_t)frac * (p.cv_max - p.cv_min) / 2048;
+// Place a window-relative value: apply invert (mirror within the window) and
+// clamp to the DAC range.
+static int32_t place(const ChannelParams &p, int32_t v) {
   if (p.invert) v = (int32_t)p.cv_min + (p.cv_max - v);
   return constrain(v, 0, DAC_MAX_MV);
+}
+
+static int32_t scaled(const ChannelParams &p, uint16_t frac) {
+  return place(p, (int32_t)p.cv_min + (int32_t)frac * (p.cv_max - p.cv_min) / 2048);
+}
+
+// ---- 1 V/oct grid: a semitone is exactly 1000/12 mV (83.33) ----
+static int32_t semi_mv(int q) { return ((int32_t)q * 1000 + 6) / 12; }
+
+// Highest whole semitone that fits in the channel's cv window.
+static int window_semis(const ChannelParams &p) {
+  const int32_t span = p.cv_max > p.cv_min ? (int32_t)p.cv_max - p.cv_min : 0;
+  return (int)(span * 12 / 1000);
+}
+
+// Nearest scale tone to `pos`, kept inside 0..max_semi and on the scale.
+static int snap_semi(int pos, uint16_t mask, int max_semi) {
+  int q = quantize_semi(pos, mask);
+  while (q > 0 && (q > max_semi || !((mask >> (q % 12)) & 1))) q--;
+  return q;
 }
 
 void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
@@ -224,19 +258,12 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     uint32_t period = p.mode == MODE_DIV ? div_period(p)
                                          : RATIO_TABLE[p.ratio].period_x256;
 
-    // External source: pulse/div gates are timed from the measured tempo
-    // because delta is only applied on input pulses, so phase does not advance
-    // between events and the normal windowed gate would stay high.
-    uint32_t gate_ticks = 0;
-    if (env.source == 1 && env.bpm_cent > 0 &&
-        (p.mode == MODE_PULSE || p.mode == MODE_DIV)) {
-      const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
-      uint32_t quarter_ms = 6000000u / env.bpm_cent;
-      uint32_t output_ms = (uint32_t)((uint64_t)quarter_ms * period / QT);
-      uint32_t gate_ms = (uint32_t)((uint64_t)output_ms * p.width / 256);
-      if (gate_ms == 0) gate_ms = 1;
-      gate_ticks = gate_ms;
-    }
+    // External clock with no measured tempo (first pulses, or the clock
+    // stopped and timed out): phase then only moves on pulses, so a windowed
+    // gate could sit high indefinitely. Gate modes emit a fixed-length trigger
+    // per fired event instead. With a tempo, phase is interpolated between
+    // pulses (app/clock.cpp) and the normal windowed gates apply.
+    const bool ext_trig = env.source == 1 && env.bpm_cent == 0;
 
     uint32_t phase_off = (uint32_t)p.phase * period / 256;
 
@@ -286,16 +313,23 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         c.sh_val = fire ? 1 : 0;
     }
 
+    if (!ext_trig) c.gate_rem = 0;
+    else if (fire) c.gate_rem = EXT_GATE_FALLBACK_MS * (CONTROL_RATE_HZ / 1000);
+    else if (c.gate_rem > 0) c.gate_rem--;
+    const bool trig_on = c.gate_rem > 0;
+
     uint32_t ph = (c.pos_x256 + phase_off) % period;
-    uint32_t ph256 = ph * 256 / period;
+    const uint32_t ph16 = (uint32_t)((uint64_t)ph * 65536 / period);
+    uint32_t ph256 = ph16 >> 8;   // == ph * 256 / period
     uint16_t frac = 0;
+    int32_t note_mv = -1;   // NOTE/QUANT: exact grid pitch, bypasses frac
 
     switch (p.mode) {
       case MODE_PULSE: case MODE_DIV: {
         uint32_t gate_ph = (c.pos_x256 + period - (uint32_t)p.delay * period / 256) % period;
         uint32_t g256 = gate_ph * 256 / period;
         uint32_t w256 = p.width ? p.width : 1;
-        bool on = c.sh_val && g256 < w256;
+        bool on = ext_trig ? trig_on : (c.sh_val && g256 < w256);
         c.gate_state = on;
         frac = on ? 2048 : 0;
         break;
@@ -304,21 +338,22 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         uint8_t n = p.ratchets ? constrain((int)p.ratchets, 1, 16) : 1;
         uint32_t sub = 256 / n;
         uint32_t r256 = (ph256 % sub) * 256 / sub;
-        bool on = c.sh_val && r256 < (uint32_t)(p.width ? p.width : 64);
+        bool on = ext_trig ? trig_on
+                           : (c.sh_val && r256 < (uint32_t)(p.width ? p.width : 64));
         c.gate_state = on;
         frac = on ? 2048 : 0;
         break;
       }
       case MODE_LFO: {
-        frac = wave_value(p.wave, p.skew ? p.skew : 128, ph256);
+        frac = wave_value(p.wave, p.skew ? p.skew : 128, ph16);
         c.gate_state = frac > 1024;
         break;
       }
       case MODE_RAMP: {
-        uint32_t rise = constrain((int16_t)(p.skew ? p.skew : 128), 1, 254);
-        if (ph256 < rise) frac = ph256 * 2048 / rise;
-        else frac = (255 - ph256) * 2048 / (255 - rise);
-        c.gate_state = ph256 < rise;
+        uint32_t rise = (uint32_t)constrain((int16_t)(p.skew ? p.skew : 128), 1, 254) << 8;
+        if (ph16 < rise) frac = (uint16_t)(ph16 * 2048 / rise);
+        else frac = (uint16_t)((65535 - ph16) * 2048 / (65535 - rise));
+        c.gate_state = ph16 < rise;
         break;
       }
       case MODE_STEP: {
@@ -347,13 +382,11 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         break;
       }
       case MODE_NOTE: {
-        uint32_t span = p.cv_max > p.cv_min ? (uint32_t)(p.cv_max - p.cv_min) : 0;
-        uint32_t st = span / 83;
-        if (st < 1) st = 1;
-        int pos = (int)((st * ph256) >> 8);
-        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales));
-        frac = (uint16_t)((uint32_t)q * 2048 / st);
-        if (frac > 2048) frac = 2048;
+        // Quantised ramp across every semitone in the window (inclusive).
+        const int max_semi = window_semis(p);
+        const int pos = (int)(((uint32_t)(max_semi + 1) * ph16) >> 16);
+        const int q = snap_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales), max_semi);
+        note_mv = (int32_t)p.cv_min + semi_mv(q);
         uint8_t note = q > 255 ? 255 : (uint8_t)q;
         c.gate_state = (note != c.last_note);
         c.last_note = note;
@@ -361,19 +394,24 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
       }
       case MODE_QUANT: {
         // 1V/oct quantiser: read the selected source (CV1/CV2 jack or another
-        // output), map 0..255 across the channel's cv window, snap to the scale.
-        uint32_t span = p.cv_max > p.cv_min ? (uint32_t)(p.cv_max - p.cv_min) : 0;
-        uint32_t st = span / 83;           // semitones available in the window
-        if (st < 1) st = 1;
-        int rv = resolve_in(p.quant_src, cv1, cv2);
-#if CV_BIPOLAR
-        if (p.quant_src < 2) rv += 128;    // bipolar jacks: mid-scale -> 0..255
-#endif
-        rv = constrain(rv, 0, 255);
-        int pos = (int)((uint32_t)rv * st / 255);
-        int q = quantize_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales));
-        frac = (uint16_t)((uint32_t)q * 2048 / st);
-        if (frac > 2048) frac = 2048;
+        // output) at 12 bits, map it across the channel's cv window, snap to
+        // the nearest scale tone.
+        uint32_t r12;
+        if (p.quant_src < 2) {
+          // Raw (un-recentred) jack reading; bipolar jacks span 0..4095 too.
+          const uint8_t lo = p.quant_src == 0 ? cv1 : cv2;
+          r12 = env.cv_hires ? (p.quant_src == 0 ? env.cv1_12 : env.cv2_12)
+                             : ((uint32_t)lo << 4 | lo >> 4);
+        } else {
+          const uint8_t ch = p.quant_src - 2;
+          const uint32_t mv_in = ch < NUM_OUTPUTS ? channels[ch].out_mv : 0;
+          r12 = mv_in * 4095 / DAC_MAX_MV;
+        }
+        if (r12 > 4095) r12 = 4095;
+        const int max_semi = window_semis(p);
+        const int pos = (int)((r12 * (uint32_t)max_semi * 2 + 4095) / (2 * 4095));
+        const int q = snap_semi(pos, scale_mask(p.scale % SCALE_COUNT, env.user_scales), max_semi);
+        note_mv = (int32_t)p.cv_min + semi_mv(q);
         uint8_t note = q > 255 ? 255 : (uint8_t)q;
         c.gate_state = (note != c.last_note);
         c.last_note = note;
@@ -395,7 +433,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         uint32_t gate_ph = (c.pos_x256 + period - (uint32_t)p.delay * period / 256) % period;
         uint32_t g256 = gate_ph * 256 / period;
         uint32_t w256 = p.width ? p.width : 1;
-        bool own = c.sh_val && g256 < w256;
+        bool own = ext_trig ? trig_on : (c.sh_val && g256 < w256);
         bool other = (p.logic_src >= 1 && p.logic_src <= NUM_OUTPUTS)
                      && channels[p.logic_src - 1].gate_state;
         bool on;
@@ -450,23 +488,7 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         break;
     }
 
-    // For external clocks the phase only advances on input pulses, so a simple
-    // windowed gate would stay high for ratios where delta is a multiple of the
-    // channel period (e.g. 1/4 at 1 PPQN). Use a tempo-derived timer instead.
-    if (env.source == 1 && (p.mode == MODE_PULSE || p.mode == MODE_DIV)) {
-      if (fire && gate_ticks > 0) {
-        c.gate_state = 1;
-        c.gate_rem = gate_ticks;
-      } else if (c.gate_rem > 0) {
-        c.gate_rem--;
-        if (c.gate_rem == 0) c.gate_state = 0;
-      } else if (gate_ticks > 0) {
-        c.gate_state = 0;
-      }
-      frac = c.gate_state ? 2048 : 0;
-    }
-
-    uint16_t mv = scaled(p, frac);
+    uint16_t mv = (uint16_t)(note_mv >= 0 ? place(p, note_mv) : scaled(p, frac));
 
     // --- Cross-op: combine this output's value with a source (CV jack or out) ---
     if (p.xop) {
@@ -501,23 +523,23 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
 
     // Global quantise: snap the final value onto the selected scale within the
     // channel's cv window (works on any mode as a post-filter).
+    // 1 V/oct: a semitone is exactly 1000/12 mV (83.33), not 83 — at 83 the
+    // error reached half a semitone by 10 V. Snaps to the nearest semitone.
     if (p.gquant) {
-      uint32_t span = p.cv_max > p.cv_min ? (uint32_t)(p.cv_max - p.cv_min) : 0;
-      uint32_t st = span / 83;
-      if (st < 1) st = 1;
-      int semis = (int)(((uint32_t)(mv > p.cv_min ? mv - p.cv_min : 0) * st) / (span ? span : 1));
-      int q = quantize_semi(semis, scale_mask(p.scale, env.user_scales));
-      int32_t m = (int32_t)q * 83;
-      if (m > p.cv_max - p.cv_min) m = p.cv_max - p.cv_min;
-      mv = (uint16_t)(p.cv_min + m);
+      const uint16_t mask = scale_mask(p.scale % SCALE_COUNT, env.user_scales);
+      const int32_t rel = mv > p.cv_min ? (int32_t)mv - p.cv_min : 0;
+      const int q = snap_semi((int)((rel * 12 + 500) / 1000), mask, window_semis(p));
+      mv = (uint16_t)(p.cv_min + semi_mv(q));
     }
 
     if (p.slew && p.mode != MODE_PULSE && p.mode != MODE_DIV && p.mode != MODE_RATCHET && p.mode != MODE_LOGIC) {
-      int32_t diff = (int32_t)mv - (int32_t)c.filt_mv;
-      c.filt_mv += (int16_t)((diff * (int32_t)p.slew) >> 8);
-      mv = c.filt_mv;
+      // Q8 fixed point: with whole-mV state, rises smaller than 256/slew mV
+      // rounded to zero and the output settled short (e.g. -31 mV at slew 8).
+      const int32_t diff = ((int32_t)mv << 8) - c.filt_x256;
+      c.filt_x256 += (diff * (int32_t)p.slew) >> 8;
+      mv = (uint16_t)((c.filt_x256 + 128) >> 8);
     } else {
-      c.filt_mv = mv;
+      c.filt_x256 = (int32_t)mv << 8;
     }
     c.out_mv = mv;
     c.out_dirty = 1;   // emitted by the caller via channels_take_outputs()

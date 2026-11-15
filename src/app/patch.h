@@ -16,5 +16,5 @@ bool patch_load(StoreSlot slot);
 void patch_init();
 // Factory defaults behind the SYS "defaults" action.
 void patch_defaults();
-// Main-loop tick: saves SLOT_ACTIVE at most every 3 s while dirty.
+// Main-loop tick: saves SLOT_ACTIVE once edits have paused for ~3 s.
 void patch_autosave_tick(uint32_t now_ms);

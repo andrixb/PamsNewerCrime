@@ -6,6 +6,8 @@
 #include <string.h>
 
 uint32_t mock_time_us = 0;
+int mock_irq_masked = 0;
+int mock_irq_mask_count = 0;
 EepromMock EEPROM;
 
 // Time port for the app clock: tests advance mock_time_us between ticks.
