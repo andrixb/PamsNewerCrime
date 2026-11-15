@@ -259,6 +259,62 @@ static void test_clock_external() {
   masterClock.tick();
   CHECK(masterClock.measured_bpm_cent() == 0);
 
+  // ext ppqn set too low for the source: the read-out shows the real implied
+  // tempo instead of saturating at BPM_MAX, so every ppqn step is visible
+  // (24 PPQN @ 120 source read at ppqn 4 -> 720 BPM, at 8 -> 360 BPM).
+  for (uint8_t pp = 4; pp <= 8; pp += 4) {
+    masterClock = MasterClock{};
+    masterClock.source = 1;
+    masterClock.ext_ppqn = pp;
+    masterClock.reset_phase();
+    mock_time_us = 0;
+    for (int i = 0; i < 20; i++) {
+      mock_time_us += period_120_24;
+      masterClock.pulse_external();
+      masterClock.tick();
+      (void)masterClock.take_delta();
+    }
+    const uint32_t want = 12000u * 24u / pp;
+    CHECK(masterClock.measured_bpm_cent() > BPM_MAX);
+    CHECK(masterClock.measured_bpm_cent() >= want - want / 100 &&
+          masterClock.measured_bpm_cent() <= want + want / 100);
+  }
+
+  // Raising ext ppqn mid-pulse (4 -> 24): interpolation already emitted more
+  // than one new, smaller pulse; the next pulse must not wrap delta (used to
+  // jump ~4e9 units) and interpolation must hold instead of running away.
+  masterClock = MasterClock{};
+  masterClock.source = 1;
+  masterClock.ext_ppqn = 4;
+  masterClock.reset_phase();
+  mock_time_us = 0;
+  const uint32_t period_120_4 = 60000000u / (120u * 4u);   // 125ms
+  for (int i = 0; i < 8; i++) {
+    mock_time_us += period_120_4;
+    masterClock.pulse_external();
+    masterClock.tick();
+    (void)masterClock.take_delta();
+  }
+  for (int t = 0; t < 100; t++) {   // ~80% through the pulse
+    mock_time_us += 1000;
+    masterClock.tick();
+  }
+  (void)masterClock.take_delta();
+  masterClock.ext_ppqn = 24;        // t256 shrinks 6144 -> 1024
+  uint32_t worst = 0;
+  for (int t = 0; t < 20; t++) {
+    mock_time_us += 1000;
+    masterClock.tick();
+    uint32_t d = masterClock.take_delta();
+    if (d > worst) worst = d;
+  }
+  mock_time_us += 5000;
+  masterClock.pulse_external();
+  masterClock.tick();
+  uint32_t d = masterClock.take_delta();
+  if (d > worst) worst = d;
+  CHECK(worst <= QT / 4);
+
   suite_ok("clock: external sync");
 }
 

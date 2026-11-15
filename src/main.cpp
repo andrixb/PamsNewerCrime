@@ -99,9 +99,10 @@ void loop() {
     last_beat_ms = beat;
     Serial.printf("pnc: alive ticks=%u ", tick_count);
     if (masterClock.source) {
-      uint16_t mbpm = masterClock.measured_bpm_cent();
+      uint32_t mbpm = masterClock.measured_bpm_cent();
       if (mbpm)
-        Serial.printf("bpm=%d.%02d EXT", mbpm / 100, mbpm % 100);
+        Serial.printf("bpm=%lu.%02lu EXT", (unsigned long)(mbpm / 100),
+                      (unsigned long)(mbpm % 100));
       else
         Serial.printf("bpm=--.-- EXT");
       Serial.printf(" ext us=%u ppqn=%u", masterClock.measured_period_us(),

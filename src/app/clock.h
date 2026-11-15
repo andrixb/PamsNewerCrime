@@ -17,7 +17,10 @@ public:
   void pulse_external();
   void reset_phase();
   uint32_t take_delta();
-  uint16_t measured_bpm_cent() const { return ext_bpm_cent; }
+  // Measured external tempo in 1/100 BPM, 0 = no tempo yet. Not limited to
+  // the internal BPM range (a ppqn set too low reads as a very high tempo).
+  uint32_t measured_bpm_cent() const { return ext_bpm_cent; }
+  static constexpr uint32_t EXT_BPM_CENT_MAX = 9999999;   // 99999.99 BPM
   uint32_t measured_period_us() const { return (uint32_t)ext_avg_us; }
   bool external_active() const { return source == 1; }
 
@@ -40,7 +43,7 @@ private:
   // Interpolation between pulses (tick() context only).
   uint32_t ext_ahead = 0;        // units emitted since the last pulse (< one pulse)
   uint64_t ext_interp_acc = 0;   // fractional unit accumulator (units * us)
-  uint16_t ext_bpm_cent = 0;
+  uint32_t ext_bpm_cent = 0;
 };
 
 extern MasterClock masterClock;

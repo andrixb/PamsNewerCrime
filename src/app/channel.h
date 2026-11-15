@@ -35,7 +35,7 @@ extern Channel channels[NUM_OUTPUTS];
 // (normally USER_SCALES); the engine never reads that global directly.
 struct EngineEnv {
   const uint16_t *user_scales;
-  uint16_t bpm_cent = 0; // effective tempo (internal setpoint or measured external)
+  uint32_t bpm_cent = 0; // effective tempo (internal setpoint or measured external)
   uint8_t source = 0;    // 0 = internal, 1 = external
   // Optional full-resolution CV jack readings (0..4095, same orientation as
   // the 8-bit cv1/cv2). The quantiser uses them when cv_hires is set: 8 bits

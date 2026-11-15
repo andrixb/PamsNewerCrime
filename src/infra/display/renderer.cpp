@@ -88,9 +88,10 @@ void ui_draw() {
   if (is_master()) {
     gfx.setCursor(0, 0);
     if (masterClock.source) {
-      uint16_t mbpm = masterClock.measured_bpm_cent();
+      uint32_t mbpm = masterClock.measured_bpm_cent();
       if (mbpm)
-        gfx.printf("M %d.%02d EXT", mbpm / 100, mbpm % 100);
+        gfx.printf("M %lu.%02lu EXT", (unsigned long)(mbpm / 100),
+                   (unsigned long)(mbpm % 100));
       else
         gfx.printf("M --.-- EXT");
     } else {

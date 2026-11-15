@@ -124,7 +124,12 @@ void MasterClock::tick() {
     if (newp) {
       consumed_pulses = pulses;
       uint32_t frac = QT - t256 * ppqn;
-      delta_x256 += newp * t256 - ext_ahead;   // ext_ahead < t256: already emitted
+      // ext_ahead was emitted against the pulse size in force at the time. If
+      // ext ppqn was raised since, it can exceed the new (smaller) t256; the
+      // unsigned subtraction then wrapped into a ~4e9 phase jump. Credit at
+      // most what this pulse contributes.
+      const uint32_t owed = newp * t256;
+      delta_x256 += owed > ext_ahead ? owed - ext_ahead : 0;
       ext_ahead = 0;
       ext_interp_acc = 0;
       frac_acc += (uint64_t)newp * frac;
@@ -133,9 +138,13 @@ void MasterClock::tick() {
 
       if (ext_avg_us > 200.0f) {
         float beats = ext_avg_us / 1e6f * ppqn;
-        // Allow the measured read-out to go lower than the internal engine minimum
-        // so very slow external clocks still display their real tempo.
-        ext_bpm_cent = (uint16_t)constrain(60.0f * 100.0f / beats, 100, BPM_MAX);
+        // The read-out is not clamped to the internal BPM_MIN..BPM_MAX range:
+        // it shows the real tempo implied by ext ppqn. Clamping at BPM_MAX made
+        // every too-low ppqn read the same "330.00", so turning ext ppqn up
+        // from 1 looked like it did nothing. Floor 1.00 (0 means "no tempo").
+        const float cent = 60.0f * 100.0f / beats;
+        ext_bpm_cent = cent >= (float)EXT_BPM_CENT_MAX ? EXT_BPM_CENT_MAX
+                     : cent < 100.0f ? 100u : (uint32_t)cent;
       }
       return;   // the pulse tick lands exactly on the pulse position
     }
@@ -154,7 +163,9 @@ void MasterClock::tick() {
     ext_interp_acc += (uint64_t)t256 * (1000000u / CONTROL_RATE_HZ);
     uint32_t step = (uint32_t)(ext_interp_acc / avg_us);
     ext_interp_acc -= (uint64_t)step * avg_us;
-    const uint32_t room = t256 - 1 - ext_ahead;
+    // ext_ahead can exceed t256 after ext ppqn is raised mid-pulse; hold
+    // (room 0) until the next pulse instead of wrapping to a huge room.
+    const uint32_t room = ext_ahead + 1 < t256 ? t256 - 1 - ext_ahead : 0;
     if (step > room) { step = room; ext_interp_acc = 0; }
     ext_ahead += step;
     delta_x256 += step;
