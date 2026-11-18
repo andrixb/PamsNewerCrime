@@ -19,7 +19,15 @@ struct UiNav {
 
 extern UiNav ui_nav;
 
-inline uint8_t ch_of_page() { return ui_nav.page - 1; }
-inline bool is_master() { return ui_nav.page == 0; }
-inline bool is_sys() { return ui_nav.page == NUM_OUTPUTS + 1; }
-inline bool is_chan() { return !is_master() && !is_sys(); }
+// Page queries on a given nav state. The renderer runs in the main loop while
+// the 1 kHz ISR mutates ui_nav, so it takes one snapshot per frame and asks
+// these about the snapshot; the controller (ISR) uses the live forms below.
+inline uint8_t ch_of_page(const UiNav &n) { return n.page - 1; }
+inline bool is_master(const UiNav &n) { return n.page == 0; }
+inline bool is_sys(const UiNav &n) { return n.page == NUM_OUTPUTS + 1; }
+inline bool is_chan(const UiNav &n) { return !is_master(n) && !is_sys(n); }
+
+inline uint8_t ch_of_page() { return ch_of_page(ui_nav); }
+inline bool is_master() { return is_master(ui_nav); }
+inline bool is_sys() { return is_sys(ui_nav); }
+inline bool is_chan() { return is_chan(ui_nav); }

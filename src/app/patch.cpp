@@ -42,6 +42,8 @@ void patch_defaults() {
   masterClock.source = 0;
   masterClock.ext_ppqn = 24;
   masterClock.running = true;
+  masterClock.swing = 0;
+  masterClock.reset_phase();
   channels_init(DEFAULT_RATIO);
   engine_unlock();
 }

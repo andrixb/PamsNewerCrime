@@ -31,3 +31,16 @@ inline void delayMicroseconds(uint32_t) {}
 extern uint32_t mock_time_us;
 inline uint32_t micros() { return mock_time_us; }
 inline uint32_t millis() { return mock_time_us / 1000u; }
+
+// CV inputs (infra/hal_input.cpp): pins as on the Teensy 4, ADC reads 0.
+#define A4 18
+#define A5 19
+inline int analogRead(uint8_t) { return 0; }
+
+// Serial: the UI controller logs at init; output is discarded on the host.
+struct MockSerial {
+  int printf(const char *, ...) { return 0; }
+  void println(const char *) {}
+  void begin(uint32_t) {}
+};
+static MockSerial Serial;

@@ -11,7 +11,19 @@ int mock_irq_mask_count = 0;
 EepromMock EEPROM;
 
 // Time port for the app clock: tests advance mock_time_us between ticks.
-uint32_t clock_now_us() { return mock_time_us; }
+// mock_now_hook (one-shot) runs AFTER the time is sampled and before it is
+// returned: it models an interrupt (e.g. a TR1 pulse) landing between the
+// caller's time read and whatever it reads next.
+void (*mock_now_hook)() = nullptr;
+uint32_t clock_now_us() {
+  const uint32_t t = mock_time_us;
+  if (mock_now_hook) {
+    void (*h)() = mock_now_hook;
+    mock_now_hook = nullptr;
+    h();
+  }
+  return t;
+}
 
 // DAC writes are recorded so tests can observe the final output stage.
 uint16_t mock_dac_mv[NUM_OUTPUTS];

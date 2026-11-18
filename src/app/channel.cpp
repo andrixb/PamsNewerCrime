@@ -105,7 +105,9 @@ void channels_reset() {
     c.event_count = 0;
     c.gate_state = 0;
     c.step_idx = 0;
-    c.sh_val = 1;
+    // t=0 is the step-1 slot: STEP holds its first value until the first
+    // event advances it. Gate modes use sh_val=1 as "window open".
+    c.sh_val = c.p.mode == MODE_STEP ? c.p.steps[0] : 1;
 
     c.env_t = 0;
     c.wv = 128;
@@ -328,7 +330,6 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     // Continuous shapes run late by the FLEX slop (phase advances with `pos`).
     const uint32_t ph = (ph_base + period - slop_off) % period;
     const uint32_t ph16 = (uint32_t)((uint64_t)ph * 65536 / period);
-    uint32_t ph256 = ph16 >> 8;   // == ph * 256 / period
     // Windowed gates open `delay` (+ FLEX slop) after the event on the grid.
     const uint32_t gate_shift = ((uint32_t)p.delay * period / 256 + slop_off) % period;
     const uint32_t gate_ph = (ph_base + period - gate_shift) % period;
@@ -346,8 +347,10 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
       }
       case MODE_RATCHET: {
         uint8_t n = p.ratchets ? constrain((int)p.ratchets, 1, 16) : 1;
-        uint32_t sub = 256 / n;
-        uint32_t r256 = (ph256 % sub) * 256 / sub;
+        // Position within the current sub-slot (0..255). Scaling the 16-bit
+        // phase by n keeps every slot equal; 256/n rounded down left a
+        // partial extra slot at the end of the cycle for most n.
+        uint32_t r256 = ((ph16 * n) & 0xFFFFu) >> 8;
         bool on = ext_trig ? trig_on
                            : (c.sh_val && r256 < (uint32_t)(p.width ? p.width : 64));
         c.gate_state = on;
@@ -484,8 +487,9 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         break;
       }
       case MODE_RWALK: {
+        // Steps once per firing event and holds in between.
         int16_t step = (int16_t)(p.width >> 4) + 1;
-        c.wv += (rand8() & 1) ? step : -step;
+        if (fire) c.wv += (rand8() & 1) ? step : -step;
         if (c.wv > 255) c.wv = 255;
         if (c.wv < 0) c.wv = 0;
         frac = (uint16_t)(c.wv + 1) * 8;

@@ -13,6 +13,8 @@ Two sources, chosen on the **master page** → `clock`:
   the source: 24 is the common Eurorack/“sync” rate, 1 fits some drum machines,
   48 for fine-grained clocks. PNC measures the incoming period, shows the derived
   tempo, and self-organises after ~4 missing pulses if the clock stops.
+  Stop (left push / `run`) works here too: incoming pulses are ignored and the
+  phase holds, while the tempo read-out keeps tracking the clock.
   - Between pulses the phase glides at the measured tempo, so LFOs and ramps move
     smoothly and clock multiplications (e.g. `1/16` from a 1 PPQN clock) fire
     between pulses. Every pulse snaps the phase back into exact alignment; if

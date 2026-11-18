@@ -24,9 +24,16 @@
 #include "app/menu_model.h"
 #include "app/storage_port.h"   // raw slot write for the version-rejection test
 #include "infra/dac.h"   // declarations only; definitions come from test/mock_hw.cpp
+#include "infra/ui.h"                    // real controller + renderer (test/mock_ui.cpp fakes the panel)
+#include "infra/hal_input.h"
+#include "infra/display/ui_nav.h"
+#include "infra/display/oled.h"
+#include <sys/wait.h>
+#include <unistd.h>
 
 extern uint32_t mock_time_us;
 extern uint16_t mock_dac_mv[];
+extern void (*mock_now_hook)();
 
 static int g_checks = 0, g_failed = 0;
 #define CHECK(cond)                                                        \
@@ -1531,6 +1538,212 @@ static void test_clock_external_interp() {
   suite_ok("clock: external interpolation");
 }
 
+// ---------------------------------------------------------------------------
+// Regression tests for the 2026-11-19 code review. Each suite pins the
+// CORRECT behaviour, so it fails until the matching fix lands.
+// ---------------------------------------------------------------------------
+
+// Bug 1: rwalk steps only on firing events and holds in between (wiki
+// Modes.md: "on each firing event it steps up or down ... and holds").
+static void test_bug_rwalk_holds() {
+  channels_init(DEFAULT_RATIO);
+  Channel &c = channels[0];
+  c.p.mode = MODE_RWALK; c.p.ratio = 16; c.p.width = 255;   // big steps: drift is obvious
+  c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+
+  // Clock stopped (delta 0): no events, so the value must not move at all.
+  const int16_t wv0 = c.wv;
+  drive(1000, 0);
+  CHECK(c.wv == wv0);
+
+  // Clock running: at most one step per event (2 events in 512 ticks).
+  int changes = 0;
+  int16_t prev = c.wv;
+  for (int t = 0; t < 512; t++) {
+    drive(1);
+    if (c.wv != prev) changes++;
+    prev = c.wv;
+  }
+  CHECK(changes <= 2);
+  suite_ok("bug: rwalk holds between events");
+}
+
+// Bug 2: after a reset the sequencer outputs step 1 for the first cycle (t=0
+// is the step-1 slot, as the existing step-sequence suite assumes), not the
+// leftover sh_val = 1 from channels_reset().
+static void test_bug_step_first_cycle() {
+  channels_init(DEFAULT_RATIO);
+  Channel &c = channels[0];
+  c.p.mode = MODE_STEP; c.p.ratio = 16; c.p.step_len = 4;
+  c.p.steps[0] = 200; c.p.steps[1] = 10; c.p.steps[2] = 20; c.p.steps[3] = 30;
+  c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0; c.p.prob = 100; c.p.eucl_en = 0;
+  channels_reset();
+  drive(1);
+  CHECK(c.sh_val == 200);
+  drive(100);                            // still inside the first cycle
+  CHECK(c.sh_val == 200);
+  CHECK(c.out_mv > 3000);                // 200/255 of 5 V, not ~0 mV
+  drive(156);                            // t=257: first event -> step 2
+  CHECK(c.sh_val == 10);
+  suite_ok("bug: step plays step 1 in the first cycle");
+}
+
+// Bug 3: ratch emits exactly `ratchets` pulses per cycle for every count, and
+// the gate is low on the cycle's last tick (no stray slot from 256 % n).
+static void test_bug_ratchet_counts() {
+  int wrong_edges = 0, high_at_end = 0;
+  for (uint8_t n = 1; n <= 16; n++) {
+    channels_init(DEFAULT_RATIO);
+    Channel &c = channels[0];
+    c.p.mode = MODE_RATCHET; c.p.ratio = 16; c.p.ratchets = n; c.p.width = 64;
+    c.p.delay = 0; c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0;
+    c.p.eucl_en = 0; c.p.prob = 100;
+    // delta=96: one cycle per 256 ticks, first event at t=256. Measure 3 cycles.
+    int rising = 0; uint8_t prev = 0;
+    for (uint32_t t = 0; t < 1024; t++) {
+      drive(1);
+      if (t >= 256) {
+        if (c.gate_state && !prev) rising++;
+        if (t % 256 == 254 && c.gate_state) high_at_end++;   // last tick of a cycle
+      }
+      prev = c.gate_state;
+    }
+    if (rising != 3 * n) { wrong_edges++; printf("  ratchet n=%u: %d pulses in 3 cycles, want %d\n", n, rising, 3 * n); }
+  }
+  CHECK(wrong_edges == 0);
+  CHECK(high_at_end == 0);
+  suite_ok("bug: ratchet pulse count for every n");
+}
+
+// Bug 4: a channel set to `off` has no parameters. Tapping the RIGHT push
+// there must not divide by zero (traps on x86, silently moves the cursor on
+// ARM) and turning the RIGHT encoder must not edit the hidden `ratio`.
+static void ui_test_reset(uint8_t page) {
+  hal_input_init();                      // encoders at rest, buttons released
+  ui_nav = UiNav{};
+  ui_nav.page = page;
+}
+
+static void test_bug_ui_off_channel() {
+  channels_init(DEFAULT_RATIO);
+  channels[0].p.mode = MODE_OFF;
+  channels[0].p.ratio = 16;
+
+  // RIGHT push tap. Run in a child: on x86 the % 0 kills the process.
+  fflush(stdout);
+  pid_t pid = fork();
+  if (pid == 0) {
+    ui_test_reset(1);
+    btn_enc_r_sw.s = 0x3F;               // next poll reads 0x7F = just released
+    ui_service();
+    _exit(ui_nav.param_idx == 0 ? 0 : 1);
+  }
+  int status = 0;
+  waitpid(pid, &status, 0);
+  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+  // RIGHT encoder: one clockwise detent (the controller negates enc_r).
+  ui_test_reset(1);
+  enc_r.acc = -ENC_CLICK_STEPS;
+  ui_service();
+  CHECK(channels[0].p.ratio == 16);
+
+  ui_nav = UiNav{};
+  suite_ok("bug: UI on an `off` channel");
+}
+
+// Bug 5: a TR1 pulse landing between tick()'s time read and its read of the
+// last-pulse timestamp must not look like a stopped clock.
+static void pulse_now() {
+  mock_time_us += 3;
+  masterClock.pulse_external();
+}
+
+static void test_bug_ext_timeout_race() {
+  ext_clock_start(24);
+  const uint32_t p120 = 60000000u / (120u * 24u);
+  for (int i = 0; i < 20; i++) {
+    mock_time_us += p120;
+    masterClock.pulse_external();
+    masterClock.tick();
+    masterClock.take_delta();
+  }
+  CHECK(masterClock.measured_bpm_cent() != 0);
+  mock_time_us += 5000;                  // mid-period, interpolating
+  mock_now_hook = pulse_now;             // pulse ISR fires inside tick()'s time read
+  masterClock.tick();
+  mock_now_hook = nullptr;
+  CHECK(masterClock.measured_bpm_cent() != 0);   // tempo not dropped
+  masterClock.take_delta();
+  suite_ok("bug: external timeout race");
+}
+
+// Bug 6: SYS "defaults" restores the factory clock, swing included.
+static void test_bug_defaults_swing() {
+  masterClock.swing = 40;
+  patch_defaults();
+  CHECK(masterClock.swing == 0);
+  masterClock.swing = 0;
+  suite_ok("bug: defaults resets swing");
+}
+
+// Bug 7: ui_draw renders ONE page per frame, even if the ISR changes page
+// while it draws (snapshot the nav state once). Simulated by flipping from
+// OUT1 to the master page right after the first text is printed.
+static std::string render_frame(uint8_t page, void (*hook)()) {
+  ui_nav = UiNav{};
+  ui_nav.page = page;
+  Adafruit_GFX &g = oled_gfx();
+  g.text.clear();
+  g.print_hook = hook;
+  ui_draw();
+  g.print_hook = nullptr;
+  return g.text;
+}
+
+static void flip_to_master() { ui_nav.page = 0; }
+
+static void test_bug_draw_consistent_page() {
+  channels_init(DEFAULT_RATIO);
+  masterClock = MasterClock{};
+  const std::string out1 = render_frame(1, nullptr);
+  const std::string master = render_frame(0, nullptr);
+  CHECK(out1 != master);
+  const std::string torn = render_frame(1, flip_to_master);
+  CHECK(torn == out1 || torn == master);
+  if (torn != out1 && torn != master) printf("  torn frame: %s\n", torn.c_str());
+  ui_nav = UiNav{};
+  suite_ok("bug: draw uses one page per frame");
+}
+
+// Bug 8: `run` = stop also halts the external clock (pulses and interpolation).
+static void test_bug_ext_stop() {
+  ext_clock_start(24);
+  const uint32_t p120 = 60000000u / (120u * 24u);
+  for (int i = 0; i < 20; i++) {
+    mock_time_us += p120;
+    masterClock.pulse_external();
+    masterClock.tick();
+    masterClock.take_delta();
+  }
+  masterClock.running = false;
+  uint32_t moved = 0;
+  for (int i = 0; i < 4; i++) {
+    for (int k = 0; k < 20; k++) {       // interpolation ticks between pulses
+      mock_time_us += 1000;
+      masterClock.tick();
+      moved += masterClock.take_delta();
+    }
+    mock_time_us += p120 - 20000;
+    masterClock.pulse_external();
+    masterClock.tick();
+    moved += masterClock.take_delta();
+  }
+  CHECK(moved == 0);
+  masterClock.running = true;
+  suite_ok("bug: stop halts external clock");
+}
+
 int main() {
   test_euclid();
   test_clock();
@@ -1569,6 +1782,14 @@ int main() {
   test_clock_external_robust();
   test_channel_ext_gate_stop();
   test_clock_external_interp();
+  test_bug_rwalk_holds();
+  test_bug_step_first_cycle();
+  test_bug_ratchet_counts();
+  test_bug_ui_off_channel();
+  test_bug_ext_timeout_race();
+  test_bug_defaults_swing();
+  test_bug_draw_consistent_page();
+  test_bug_ext_stop();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

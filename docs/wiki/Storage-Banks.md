@@ -23,8 +23,8 @@ left encoder to run it):
 2. **save bank B** — copy into bank B
 3. **load bank A** — replace the current state from bank A
 4. **load bank B** — replace from bank B
-5. **defaults** — reset to 120 BPM, all channels back to their initial `pulse`
-   configuration
+5. **defaults** — reset to 120 BPM, internal clock, swing off, all channels
+   back to their initial `pulse` configuration
 
 Banks are *snapshots*: load copies the bank into your live state, but the live
 state keeps autosaving on top, so a bank is never mutated until you save over it
