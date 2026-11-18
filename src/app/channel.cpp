@@ -265,17 +265,13 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     // pulses (app/clock.cpp) and the normal windowed gates apply.
     const bool ext_trig = env.source == 1 && env.bpm_cent == 0;
 
+    // `phase` rotates where the cycle starts; it is part of the event grid too.
     uint32_t phase_off = (uint32_t)p.phase * period / 256;
-
-    // --- FLEX micro-timing, offset part: human + swing shift the gate start ---
-    if (p.flex == FLEX_HUMAN && c.ev_off) phase_off = (phase_off + (uint32_t)c.ev_off * period / 256) % period;
-    else if (p.flex == FLEX_SWING && (c.event_count & 1))
-      phase_off = (phase_off + (uint32_t)p.flex_amt * period / 512) % period;
 
     // --- FLEX, rate part: accel / hump / falling scale the phase increment ---
     uint32_t d = delta_x256;
     if (p.flex_amt) {
-      uint32_t ph0_256 = (uint32_t)(((uint64_t)(c.pos_x256 + phase_off) % period) * 256 / period);
+      uint32_t ph0_256 = (uint32_t)(((uint64_t)((c.pos_x256 + phase_off) % period)) * 256 / period);
       uint32_t rate = 256;
       if (p.flex == FLEX_ACCEL)       rate = c.rate256;
       else if (p.flex == FLEX_HUMP)   rate = 256 + (uint32_t)p.flex_amt * (ph0_256 * (256 - ph0_256) / 64) / 256;
@@ -318,16 +314,30 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     else if (c.gate_rem > 0) c.gate_rem--;
     const bool trig_on = c.gate_rem > 0;
 
-    uint32_t ph = (c.pos_x256 + phase_off) % period;
+    const uint32_t ph_base = (c.pos_x256 + phase_off) % period;
+    // --- FLEX micro-timing, offset part: human + swing delay the output ---
+    // Computed AFTER the event block so the new cycle uses the freshly re-rolled
+    // offset; doing it before caused a one-tick gate blip at every boundary.
+    // It is deliberately kept OUT of the event-boundary math above: re-rolling
+    // it there moved the just-crossed boundary backwards whenever the new
+    // offset was smaller, recounting the same event and rushing euclid/steps.
+    uint32_t slop_off = 0;
+    if (p.flex == FLEX_HUMAN && c.ev_off) slop_off = (uint32_t)c.ev_off * period / 256;
+    else if (p.flex == FLEX_SWING && (c.event_count & 1))
+      slop_off = (uint32_t)p.flex_amt * period / 512;
+    // Continuous shapes run late by the FLEX slop (phase advances with `pos`).
+    const uint32_t ph = (ph_base + period - slop_off) % period;
     const uint32_t ph16 = (uint32_t)((uint64_t)ph * 65536 / period);
     uint32_t ph256 = ph16 >> 8;   // == ph * 256 / period
+    // Windowed gates open `delay` (+ FLEX slop) after the event on the grid.
+    const uint32_t gate_shift = ((uint32_t)p.delay * period / 256 + slop_off) % period;
+    const uint32_t gate_ph = (ph_base + period - gate_shift) % period;
+    const uint32_t g256 = gate_ph * 256 / period;
     uint16_t frac = 0;
     int32_t note_mv = -1;   // NOTE/QUANT: exact grid pitch, bypasses frac
 
     switch (p.mode) {
       case MODE_PULSE: case MODE_DIV: {
-        uint32_t gate_ph = (c.pos_x256 + period - (uint32_t)p.delay * period / 256) % period;
-        uint32_t g256 = gate_ph * 256 / period;
         uint32_t w256 = p.width ? p.width : 1;
         bool on = ext_trig ? trig_on : (c.sh_val && g256 < w256);
         c.gate_state = on;
@@ -430,8 +440,6 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         break;
       }
       case MODE_LOGIC: {
-        uint32_t gate_ph = (c.pos_x256 + period - (uint32_t)p.delay * period / 256) % period;
-        uint32_t g256 = gate_ph * 256 / period;
         uint32_t w256 = p.width ? p.width : 1;
         bool own = ext_trig ? trig_on : (c.sh_val && g256 < w256);
         bool other = (p.logic_src >= 1 && p.logic_src <= NUM_OUTPUTS)

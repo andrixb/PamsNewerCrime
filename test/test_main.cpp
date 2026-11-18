@@ -1000,7 +1000,48 @@ static void test_channel_flex() {
     CHECK(rises >= 2);
     CHECK(on > 0 && on <= 1024);
     CHECK(peak <= 5000);
+    // Offset ops must never move the event grid: a re-rolled slop used to push
+    // the just-crossed boundary backwards and recount the same event.
+    if (f == FLEX_HUMAN || f == FLEX_SWING) CHECK(x.event_count == 4);
   }
+  // swing provably delays alternate events: the gate starts at two distinct
+  // points in the cycle instead of always on the grid.
+  channels_init(DEFAULT_RATIO);
+  Channel &s = channels[0];
+  s.p.mode = MODE_PULSE; s.p.ratio = 16; s.p.width = 64;
+  s.p.cv_min = 0; s.p.cv_max = 5000; s.p.slew = 0; s.p.prob = 100; s.p.eucl_en = 0;
+  s.p.flex = FLEX_SWING; s.p.flex_amt = 128;
+  bool saw_straight = false, saw_late = false;
+  uint8_t sprev = 0;
+  for (uint32_t t = 0; t < 1024; t++) {
+    drive(1);
+    if (s.gate_state && !sprev) {
+      uint32_t at = t % 256;
+      if (at < 8) saw_straight = true;
+      else if (at > 40 && at < 100) saw_late = true;
+    }
+    sprev = s.gate_state;
+  }
+  CHECK(s.event_count == 4);
+  CHECK(saw_straight && saw_late);
+  // Euclid + human: the pattern must still advance on the real event grid
+  // (3 of every 8), not at ~2x from recounting.
+  channels_init(DEFAULT_RATIO);
+  Channel &e = channels[0];
+  e.p.mode = MODE_PULSE; e.p.ratio = 16; e.p.width = 64;
+  e.p.cv_min = 0; e.p.cv_max = 5000; e.p.slew = 0; e.p.prob = 100;
+  e.p.eucl_en = 1; e.p.eucl_len = 8; e.p.eucl_fill = 3; e.p.eucl_rot = 0;
+  e.p.flex = FLEX_HUMAN; e.p.flex_amt = 128;
+  channel_rebuild_euclid(e);
+  int e_rises = 0;
+  uint8_t eprev = 0;
+  for (uint32_t t = 0; t < 8192; t++) {
+    drive(1);
+    if (e.gate_state && !eprev) e_rises++;
+    eprev = e.gate_state;
+  }
+  CHECK(e.event_count == 32);       // 32 real grid events, not 64
+  CHECK(e_rises >= 11 && e_rises <= 15);  // ~3/8 of them fire
   // The rate warp provably bends time (accel stretches the open window).
   channels_init(DEFAULT_RATIO);
   Channel &a = channels[0];
