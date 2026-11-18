@@ -48,6 +48,8 @@ static int resolve_in(uint8_t sel, uint8_t cv1, uint8_t cv2) {
 
 static void apply_cv(ChannelParams &p, uint8_t src, int8_t scale, int val) {
   if (!src || !scale) return;
+  // Divisions below (not >>) truncate toward zero, so +scale and -scale move
+  // a parameter by the same amount; >> floored negatives one step further.
   int32_t m = (int32_t)scale * val / 2;
   switch (src) {
     case CVP_RANGE: {
@@ -60,18 +62,18 @@ static void apply_cv(ChannelParams &p, uint8_t src, int8_t scale, int val) {
       p.cv_max = c + span / 2;
       break;
     }
-    case CVP_WIDTH: p.width  = constrain(p.width + (m >> 4), 1, 255); break;
-    case CVP_PHASE: p.phase  = constrain(p.phase + (m >> 4), 0, 255); break;
-    case CVP_DELAY: p.delay  = constrain(p.delay + (m >> 4), 0, 255); break;
-    case CVP_PROB:  p.prob   = constrain(p.prob + (m >> 6), 0, 100); break;
-    case CVP_RATIO: p.ratio  = constrain((int)p.ratio + (m >> 7), 0, RATIO_COUNT - 1); break;
-    case CVP_DIV:   p.div_a  = constrain((int)p.div_a + (m >> 7), -32, 32); break;
-    case CVP_SKEW:  p.skew   = constrain(p.skew + (m >> 4), 0, 255); break;
-    case CVP_ATK:   p.env_a  = constrain(p.env_a + (m >> 4), 0, 255); break;
-    case CVP_DEC:   p.env_d  = constrain(p.env_d + (m >> 4), 0, 255); break;
-    case CVP_SLEW:  p.slew   = constrain(p.slew + (m >> 4), 0, 255); break;
-    case CVP_SMOOTH: p.smooth = constrain(p.smooth + (m >> 4), 0, 255); break;
-    case CVP_BURST:  p.burst  = constrain(p.burst + (m >> 4), 0, 255); break;
+    case CVP_WIDTH: p.width  = constrain(p.width + (m / 16), 1, 255); break;
+    case CVP_PHASE: p.phase  = constrain(p.phase + (m / 16), 0, 255); break;
+    case CVP_DELAY: p.delay  = constrain(p.delay + (m / 16), 0, 255); break;
+    case CVP_PROB:  p.prob   = constrain(p.prob + (m / 64), 0, 100); break;
+    case CVP_RATIO: p.ratio  = constrain((int)p.ratio + (m / 128), 0, RATIO_COUNT - 1); break;
+    case CVP_DIV:   p.div_a  = constrain((int)p.div_a + (m / 128), -32, 32); break;
+    case CVP_SKEW:  p.skew   = constrain(p.skew + (m / 16), 0, 255); break;
+    case CVP_ATK:   p.env_a  = constrain(p.env_a + (m / 16), 0, 255); break;
+    case CVP_DEC:   p.env_d  = constrain(p.env_d + (m / 16), 0, 255); break;
+    case CVP_SLEW:  p.slew   = constrain(p.slew + (m / 16), 0, 255); break;
+    case CVP_SMOOTH: p.smooth = constrain(p.smooth + (m / 16), 0, 255); break;
+    case CVP_BURST:  p.burst  = constrain(p.burst + (m / 16), 0, 255); break;
     default: break;
   }
 }
@@ -98,32 +100,44 @@ void channels_init(uint8_t default_ratio) {
   channels_reset();
 }
 
+// Per-app state: what a channel must forget when it starts (or switches) app.
+// Phase, event count, slew state and the current output are NOT touched, so a
+// switched channel stays on the grid and glides from where it was.
+static void reset_mode_state(Channel &c) {
+  c.gate_state = 0;
+  c.step_idx = 0;
+  // t=0 is the step-1 slot: STEP holds its first value until the first
+  // event advances it. Gate modes use sh_val=1 as "window open".
+  c.sh_val = c.p.mode == MODE_STEP ? c.p.steps[0] : 1;
+  c.env_t = 0;
+  c.wv = 128;
+  c.wtar = 128;
+  c.wsm = 128;
+  c.last_note = 0;
+  c.hold_mv = 0;
+  c.x_hi = 0;
+  c.ev_off = 0;
+  c.pend = 0;
+  c.rate256 = 256;
+  c.gate_rem = 0;
+}
+
 void channels_reset() {
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     Channel &c = channels[i];
     c.pos_x256 = 0;
     c.event_count = 0;
-    c.gate_state = 0;
-    c.step_idx = 0;
-    // t=0 is the step-1 slot: STEP holds its first value until the first
-    // event advances it. Gate modes use sh_val=1 as "window open".
-    c.sh_val = c.p.mode == MODE_STEP ? c.p.steps[0] : 1;
-
-    c.env_t = 0;
-    c.wv = 128;
-    c.wtar = 128;
-    c.wsm = 128;
-    c.last_note = 0;
+    reset_mode_state(c);
     c.out_mv = 0;
     c.filt_x256 = 0;
-    c.hold_mv = 0;
-    c.x_hi = 0;
-    c.ev_off = 0;
-    c.pend = 0;
-    c.rate256 = 256;
-    c.gate_rem = 0;
     c.out_dirty = 1;   // hardware must re-assert every output (was dac_write(i, 0))
   }
+}
+
+void channel_set_mode(Channel &c, uint8_t mode) {
+  if (mode >= MODE_LAST || mode == c.p.mode) return;
+  c.p.mode = mode;
+  reset_mode_state(c);
 }
 
 uint8_t channels_take_outputs(uint16_t out_mv[NUM_OUTPUTS]) {
@@ -238,6 +252,12 @@ static int window_semis(const ChannelParams &p) {
 static int snap_semi(int pos, uint16_t mask, int max_semi) {
   int q = quantize_semi(pos, mask);
   while (q > 0 && (q > max_semi || !((mask >> (q % 12)) & 1))) q--;
+  if ((mask >> (q % 12)) & 1) return q;
+  // Sparse scales whose lowest note is above position 0 (e.g. a user scale
+  // containing only semitone 11) have no in-scale tone below: search upward
+  // instead of returning the off-scale fallback note 0.
+  for (int r = 1; r <= max_semi; r++)
+    if ((mask >> (r % 12)) & 1) return r;
   return q;
 }
 
@@ -365,12 +385,12 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         break;
       }
       case MODE_LFO: {
-        frac = wave_value(p.wave, p.skew ? p.skew : 128, ph16);
+        frac = wave_value(p.wave, p.skew, ph16);
         c.gate_state = frac > 1024;
         break;
       }
       case MODE_RAMP: {
-        uint32_t rise = (uint32_t)constrain((int16_t)(p.skew ? p.skew : 128), 1, 254) << 8;
+        uint32_t rise = (uint32_t)constrain((int16_t)p.skew, 1, 254) << 8;
         if (ph16 < rise) frac = (uint16_t)(ph16 * 2048 / rise);
         else frac = (uint16_t)((65535 - ph16) * 2048 / (65535 - rise));
         c.gate_state = ph16 < rise;
@@ -519,22 +539,23 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         uint8_t ch = p.xsrc - 2;
         a = ch < NUM_OUTPUTS ? channels[ch].out_mv : 0;
       }
-      bool ahi = a >= (DAC_MAX_MV / 2);  // gate-high threshold for logic ops
-      bool rise = (a >= (DAC_MAX_MV / 10)) && !c.x_hi;
-      c.x_hi = (a >= (DAC_MAX_MV / 10));
+      const bool a_hi = a >= (DAC_MAX_MV / 10);   // gate-high for logic ops
+      const bool own_hi = mv >= (DAC_MAX_MV / 10);
+      const bool rise = a_hi && !c.x_hi;
+      c.x_hi = a_hi;
       int32_t t;
       switch (p.xop) {
         case XOP_MIX:  mv = (uint16_t)(((uint32_t)mv + a) / 2); break;
-        case XOP_MASK: if (a < (DAC_MAX_MV / 10)) mv = 0; break;
-        case XOP_NOT:  if (a >= (DAC_MAX_MV / 10)) mv = 0; break;  // inverse of MASK
+        case XOP_MASK: if (!a_hi) mv = 0; break;
+        case XOP_NOT:  if (a_hi) mv = 0; break;    // inverse of MASK
         case XOP_MULT: mv = (uint16_t)(((uint32_t)mv * a) / DAC_MAX_MV); break;
-        case XOP_HOLD: if (a < (DAC_MAX_MV / 10)) mv = c.hold_mv; else c.hold_mv = mv; break;
+        case XOP_HOLD: if (a_hi) mv = c.hold_mv; else c.hold_mv = mv; break;
         case XOP_SH:   if (rise) c.hold_mv = mv; mv = c.hold_mv; break;
         case XOP_ADD:  t = (int32_t)mv + (int32_t)a; mv = t > DAC_MAX_MV ? DAC_MAX_MV : (uint16_t)t; break;
         case XOP_SUB:  t = (int32_t)mv - (int32_t)a; mv = t < 0 ? 0 : (uint16_t)t; break;
-        case XOP_AND:  if (!(mv >= (DAC_MAX_MV / 10) && ahi)) mv = 0; break;
-        case XOP_OR:   if (ahi) mv = mv > a ? mv : a; break;
-        case XOP_XOR:  if (ahi == (mv >= (DAC_MAX_MV / 10))) mv = 0; break;
+        case XOP_AND:  if (!(own_hi && a_hi)) mv = 0; break;
+        case XOP_OR:   if (a_hi) mv = mv > a ? mv : a; break;
+        case XOP_XOR:  if (a_hi == own_hi) mv = 0; break;
         case XOP_SEED: if (rise) rng = 0x9e3779b9u ^ (uint32_t)(mv + 1) * 2654435761u; break;
         default: break;
       }

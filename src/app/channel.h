@@ -48,6 +48,9 @@ struct EngineEnv {
 void channels_init(uint8_t default_ratio);
 void channels_reset();
 void channel_rebuild_euclid(Channel &c);
+// Switch a channel's app, starting the new app's state fresh (step 1, no
+// stale gate/envelope/walk) while keeping its phase on the grid.
+void channel_set_mode(Channel &c, uint8_t mode);
 // Pure computation: advances engine state and marks dirty outputs. Performs
 // no I/O; call channels_take_outputs() + dac_write() to emit.
 void channels_update(uint32_t master_delta_x256, uint8_t cv1, uint8_t cv2,

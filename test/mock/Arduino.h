@@ -18,7 +18,10 @@
 
 inline void pinMode(uint8_t, uint8_t) {}
 inline void digitalWrite(uint8_t, uint8_t) {}
-inline int  digitalRead(uint8_t) { return HIGH; }
+// Pins read HIGH (released / pulled up) unless their bit is set here, so tests
+// can hold a button or encoder push LOW across several polls.
+extern uint64_t mock_pins_low;
+inline int  digitalRead(uint8_t pin) { return ((mock_pins_low >> pin) & 1u) ? LOW : HIGH; }
 // Interrupt masking is observable so tests can check engine-lock pairing.
 extern int mock_irq_masked;        // current nesting depth (must return to 0)
 extern int mock_irq_mask_count;    // total noInterrupts() calls

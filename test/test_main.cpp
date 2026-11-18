@@ -34,6 +34,7 @@
 extern uint32_t mock_time_us;
 extern uint16_t mock_dac_mv[];
 extern void (*mock_now_hook)();
+extern uint64_t mock_pins_low;
 
 static int g_checks = 0, g_failed = 0;
 #define CHECK(cond)                                                        \
@@ -1115,6 +1116,9 @@ static void test_menu_groups() {
   CHECK(app_param_at(MODE_STEP, 3, 8) == P_STEP0 + 1);
   CHECK(strcmp(app_param_group(MODE_PULSE, 0, 8), "pulse") == 0);  // shape = mode name
   CHECK(strcmp(app_param_group(MODE_PULSE, 2, 8), "clock") == 0);  // width,delay then clock
+  // Ramp behaves as the continuous LFO shape and must expose the mod chains.
+  uint8_t rn = chan_param_count(MODE_RAMP, 8);
+  CHECK(strcmp(app_param_group(MODE_RAMP, rn - 1, 8), "mod") == 0);
   suite_ok("menu: groups");
 }
 
@@ -1813,6 +1817,311 @@ static void test_bug_off_phase_wrap() {
   suite_ok("bug: off channel stays phase-locked");
 }
 
+// Bug 12: XOP_HOLD froze the output while the source was LOW, the inverse of
+// the wiki ("freeze while the source is high"). Logic XOPs also used a 5 V
+// source threshold while this channel's own "high" was 1 V, so AND/XOR never
+// fired with the default 3 V gate level.
+static void test_bug_crossop_gate_levels() {
+  channels_init(DEFAULT_RATIO);
+  Channel &a = channels[0], &b = channels[1];
+  setup_pulse(a, 16, 255); a.p.cv_min = 0; a.p.cv_max = 3000;
+  setup_pulse(b, 16, 255); b.p.cv_min = 0; b.p.cv_max = 3000;
+  b.p.xop = XOP_AND; b.p.xsrc = 2;
+  int mismatch = 0, highs = 0;
+  for (uint32_t t = 0; t < 512; t++) {
+    drive(1);
+    if (t < 256) continue;
+    if ((a.out_mv > 0) != (b.out_mv > 0)) mismatch++;
+    if (b.out_mv > 0) highs++;
+  }
+  CHECK(mismatch == 0);
+  CHECK(highs > 0);
+
+  channels_init(DEFAULT_RATIO);
+  setup_pulse(b, 16, 255); b.p.cv_min = 0; b.p.cv_max = 3000;
+  setup_pulse(a, 16, 255); a.p.cv_min = 0; a.p.cv_max = 3000;
+  b.p.xop = XOP_XOR; b.p.xsrc = 2;
+  highs = 0;
+  for (uint32_t t = 0; t < 512; t++) {
+    drive(1);
+    if (t >= 256 && b.out_mv > 0) highs++;
+  }
+  CHECK(highs == 0);           // both gates are high together -> XOR is low
+
+  channels_init(DEFAULT_RATIO);
+  setup_pulse(a, 16, 255); a.p.cv_min = 0; a.p.cv_max = 3000;
+  setup_pulse(b, 16, 1);   b.p.cv_min = 0; b.p.cv_max = 3000;
+  b.p.xop = XOP_OR; b.p.xsrc = 2;
+  highs = 0;
+  for (uint32_t t = 0; t < 512; t++) {
+    drive(1);
+    if (t >= 256 && b.out_mv > 0) highs++;
+  }
+  CHECK(highs > 200);          // source high keeps OR high even when own gate is low
+
+  channels_init(DEFAULT_RATIO);
+  Channel &s = channels[0], &h = channels[1];
+  setup_pulse(s, 16, 64); s.p.cv_min = 0; s.p.cv_max = 10000;
+  h.p.mode = MODE_LFO; h.p.ratio = 16; h.p.wave = LFO_SAW;
+  h.p.cv_min = 0; h.p.cv_max = 10000; h.p.slew = 0;
+  h.p.xop = XOP_HOLD; h.p.xsrc = 2;
+  channels_reset();
+  int high_ticks = 0, low_ticks = 0, moved_high = 0, moved_low = 0;
+  uint16_t prev = h.out_mv;
+  for (uint32_t t = 0; t < 512; t++) {
+    drive(1);
+    if (t < 256) { prev = h.out_mv; continue; }
+    const bool same = h.out_mv == prev;
+    if (s.gate_state) {
+      high_ticks++;
+      if (!same) moved_high++;
+    } else {
+      low_ticks++;
+      if (!same) moved_low++;
+    }
+    prev = h.out_mv;
+  }
+  CHECK(high_ticks > 0);
+  CHECK(moved_high == 0);          // frozen while the source is high
+  CHECK(moved_low == low_ticks);   // free-running while the source is low
+  suite_ok("bug: cross-op hold polarity / gate thresholds");
+}
+
+// Bug 13: a user scale whose lowest note is above position 0 made MODE_NOTE
+// emit note 0, which is off-scale, for the first part of every ramp.
+static void test_bug_note_scale_bottom() {
+  const uint16_t saved = USER_SCALES[0];
+  USER_SCALES[0] = 0x800;               // only semitone 11
+  channels_init(DEFAULT_RATIO);
+  Channel &c = channels[0];
+  c.p.mode = MODE_NOTE; c.p.ratio = 16;
+  c.p.scale = SCALE_COUNT - USER_SCALE_COUNT;   // first user slot
+  c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0;
+  channels_reset();
+  bool off_scale = false;
+  int seen11 = 0;
+  for (uint32_t t = 0; t < 256; t++) {
+    drive(1);
+    int k = grid_semi(c.out_mv);
+    if (k < 0 || !((0x800 >> (k % 12)) & 1)) off_scale = true;
+    if (k >= 0 && (k % 12) == 11) seen11++;
+  }
+  CHECK(!off_scale);
+  CHECK(seen11 > 0);
+  USER_SCALES[0] = saved;
+  suite_ok("bug: note quantiser bottom of sparse scale");
+}
+
+// Bug 14: the external-clock timeout did `(int32_t)(avg * 4.0f)`. With a very
+// slow clock avg*4 exceeds INT32_MAX, so the cast is undefined behaviour.
+static void test_bug_clock_large_gap() {
+  ext_clock_start(1);
+  for (int i = 0; i < 5; i++) {
+    mock_time_us += 600000000u;          // 600 s between edges, avg*4 > INT32_MAX
+    masterClock.pulse_external();
+  }
+  masterClock.tick();                    // consume the five pulses
+  masterClock.tick();                    // now evaluate the timeout gap
+  CHECK(masterClock.measured_period_us() == 600000000u);
+  masterClock = MasterClock{};
+  mock_time_us = 1000000;
+  suite_ok("bug: large external clock timeout");
+}
+
+// Bug 15: two built-in scale masks held the wrong notes. Iwato is
+// 1 b2 4 b5 b7 = {0,1,5,6,10}; blues major is 1 2 b3 3 5 6 = {0,2,3,4,7,9}.
+static int scale_index(const char *name) {
+  for (int i = 0; i < SCALE_COUNT; i++)
+    if (strcmp(SCALE_NAMES[i], name) == 0) return i;
+  return -1;
+}
+
+static void test_bug_scale_masks() {
+  const int iwato = scale_index("iwato"), blsmaj = scale_index("blsmaj");
+  CHECK(iwato >= 0 && blsmaj >= 0);
+  if (iwato >= 0) CHECK(scale_mask((uint8_t)iwato, USER_SCALES) == 0x463);
+  if (blsmaj >= 0) CHECK(scale_mask((uint8_t)blsmaj, USER_SCALES) == 0x29D);
+  suite_ok("bug: iwato / blues major scale masks");
+}
+
+// Bug 16: editing swing in the middle of a quarter permanently shifted the
+// grid. The warp assumed the current quarter had been swung with the NEW
+// amount from its start, so that quarter emitted more or less than QT and
+// every later boundary stayed off by the difference (19 % of a quarter for
+// 0 -> 40 at the half-way point).
+static void test_bug_swing_change_mid_beat() {
+  const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+  masterClock = MasterClock{};
+  masterClock.bpm_cent = 12000;          // 500 ticks = exactly one quarter
+  masterClock.source = 0; masterClock.running = true; masterClock.swing = 0;
+  masterClock.reset_phase();
+
+  uint32_t total = 0;
+  run_clock(250, &total);
+  masterClock.swing = 40;                // switched on half-way through
+  run_clock(250, &total);
+  CHECK(total == QT);                    // quarter boundary still on time
+
+  // Several edits inside one quarter, ending with swing off again.
+  run_clock(100, &total); masterClock.swing = 63;
+  run_clock(150, &total); masterClock.swing = 10;
+  run_clock(100, &total); masterClock.swing = 0;
+  run_clock(150, &total);
+  CHECK(total == 2 * QT);
+
+  // ... and the grid stays locked afterwards.
+  masterClock.swing = 33;
+  run_clock(1500, &total);
+  CHECK(total == 5 * QT);
+
+  // No phase jump: dropping hard swing early in the first eighth must not
+  // dump the warp difference (~2400 units) into a single tick.
+  masterClock.reset_phase();
+  masterClock.swing = 63;
+  total = 0;
+  run_clock(100, &total);
+  masterClock.swing = 0;
+  uint32_t max_step = 0;
+  for (int i = 0; i < 400; i++) {
+    masterClock.tick();
+    const uint32_t d = masterClock.take_delta();
+    if (d > max_step) max_step = d;
+    total += d;
+  }
+  CHECK(total == QT);
+  CHECK(max_step <= 100);                // straight is ~49 units/tick
+  masterClock = MasterClock{};
+  suite_ok("bug: swing edit mid-quarter keeps the grid");
+}
+
+// Bug 17: holding the RIGHT push resets every channel to phase 0, but the
+// master clock kept its position inside the swung quarter. With swing on,
+// the channels then restarted mid-quarter and the swing landed on the wrong
+// eighths. After the reset, the clock must swing exactly like a fresh start.
+static void test_bug_reset_realigns_swing() {
+  masterClock = MasterClock{};
+  masterClock.bpm_cent = 12000; masterClock.source = 0;
+  masterClock.running = true; masterClock.swing = 63;
+  masterClock.reset_phase();
+  uint32_t ref = 0;
+  run_clock(250, &ref);                  // fresh start: first half of the raw quarter
+
+  masterClock.reset_phase();
+  run_clock(250, nullptr);               // now mid-quarter
+  channels_init(DEFAULT_RATIO);
+  channels[0].pos_x256 = 12345;
+  ui_test_reset(1);
+  mock_pins_low = 1ull << PIN_ENC_R_SW;  // hold the RIGHT push
+  for (int i = 0; i < 700 && channels[0].pos_x256 != 0; i++) ui_service();
+  CHECK(channels[0].pos_x256 == 0);      // long press fired
+  mock_pins_low = 0;
+  for (int i = 0; i < 20; i++) ui_service();
+
+  uint32_t after = 0;
+  run_clock(250, &after);
+  CHECK(after == ref);                   // first (late) eighth, like a fresh start
+  ui_nav = UiNav{};
+  masterClock = MasterClock{};
+  suite_ok("bug: channel reset realigns the swing quarter");
+}
+
+// Bug 18: shortening `eu length` left `eu rot` past the new length. The menu
+// itself never allows rot >= len, and a load clamps it, so the saved patch
+// came back different from what was playing.
+static void test_bug_euclid_rot_clamp() {
+  channels_init(DEFAULT_RATIO);
+  menu_set_val(0, P_EULEN, 8, MENU_CHANNEL);
+  menu_set_val(0, P_EUROT, 7, MENU_CHANNEL);
+  CHECK(channels[0].p.eucl_rot == 7);
+  menu_set_val(0, P_EULEN, 4, MENU_CHANNEL);
+  CHECK(channels[0].p.eucl_rot <= 3);
+
+  const ChannelParams before = channels[0].p;
+  StoreBlob b;
+  capture_state(b);
+  restore_state(b);
+  CHECK(memcmp(&before, &channels[0].p, sizeof(before)) == 0);   // round-trips
+  suite_ok("bug: euclid rotation follows a shorter length");
+}
+
+// Bug 19: picking an app in the APP menu only swapped `mode`; per-mode state
+// stayed from the old app. Switching a pulse channel to `step` played the
+// pulse's gate flag (~0 V) instead of step 1 until the next event, and the
+// sequence resumed from wherever the old step index was.
+static void test_bug_app_switch_fresh_state() {
+  channels_init(DEFAULT_RATIO);
+  Channel &c = channels[0];
+  setup_pulse(c, 16, 64);
+  c.p.steps[0] = 200; c.p.steps[1] = 10; c.p.step_len = 4;
+  channels_reset();
+  drive(300);                            // one event in: gate flag latched
+  c.step_idx = 2;                        // stale index from an earlier step run
+
+  ui_test_reset(1);
+  ui_nav.app_menu = true;
+  ui_nav.app_sel = MODE_STEP;
+  btn_enc_r_sw.s = 0x3F;                 // next poll: RIGHT push released = assign
+  ui_service();
+  CHECK(c.p.mode == MODE_STEP);
+  CHECK(!ui_nav.app_menu);
+
+  drive(1);                              // mid-cycle, no event yet
+  CHECK(c.sh_val == 200);                // holds step 1
+  CHECK(c.out_mv > 3000);                // 200/255 of 5 V, not ~0 mV
+  drive(255);                            // crosses the next event
+  CHECK(c.sh_val == 10);                 // advances to step 2
+  ui_nav = UiNav{};
+  suite_ok("bug: app switch starts the new app fresh");
+}
+
+// Bug 20: LFO and ramp treated skew 0 as 128 while the menu showed "0".
+// 0 must behave as the minimum: a square with 0 duty, a ramp that rises
+// immediately (the same as skew 1).
+static void test_bug_skew_zero() {
+  auto trace = [](uint8_t mode, uint8_t wave, uint8_t skew, uint16_t *out) {
+    channels_init(DEFAULT_RATIO);
+    Channel &c = channels[0];
+    c.p.mode = mode; c.p.wave = wave; c.p.skew = skew; c.p.ratio = 16;
+    c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0;
+    channels_reset();
+    for (uint32_t t = 0; t < 256; t++) { drive(1); out[t] = c.out_mv; }
+  };
+  static uint16_t a[256], b[256];
+  trace(MODE_LFO, LFO_SQR, 0, a);
+  int high = 0;
+  for (int t = 0; t < 256; t++) if (a[t] > 0) high++;
+  CHECK(high == 0);                      // 0 % duty, not 50 %
+
+  trace(MODE_RAMP, 0, 0, a);
+  trace(MODE_RAMP, 0, 1, b);
+  CHECK(memcmp(a, b, sizeof(a)) == 0);   // skew 0 == skew 1 (fastest rise)
+  CHECK(a[128] < 3000);                  // falling half-way, not at a 50 % peak
+  suite_ok("bug: skew 0 is the minimum, not 128");
+}
+
+// Bug 21: CV modulation used `m >> n`, which floors negative values. A small
+// CV with scale -1 moved the target by -1 while scale +1 moved it by 0.
+static void test_bug_cv_mod_symmetric() {
+  auto width_on = [](int8_t scale) {
+    channels_init(DEFAULT_RATIO);
+    Channel &c = channels[0];
+    setup_pulse(c, 16, 64);
+    c.p.cv_src1 = CVP_WIDTH; c.p.cv_scale1 = scale; c.p.cv_in1 = 0;
+    channels_reset();
+    int on = 0;
+    for (uint32_t t = 0; t < 512; t++) {
+      channels_update(96, 10, 0, {USER_SCALES});   // small CV: |m| = 5
+      if (t >= 256 && c.gate_state) on++;
+    }
+    return on;
+  };
+  CHECK(width_on(0) == 64);
+  CHECK(width_on(1) == 64);
+  CHECK(width_on(-1) == 64);             // was 63: floor(-5/16) = -1
+  CHECK(width_on(-127) == 128 - width_on(127));   // equal and opposite
+  suite_ok("bug: CV modulation is symmetric around zero");
+}
+
 int main() {
   test_euclid();
   test_clock();
@@ -1862,6 +2171,16 @@ int main() {
   test_bug_lag_time_constant();
   test_bug_ratchet_delay();
   test_bug_off_phase_wrap();
+  test_bug_crossop_gate_levels();
+  test_bug_note_scale_bottom();
+  test_bug_clock_large_gap();
+  test_bug_scale_masks();
+  test_bug_swing_change_mid_beat();
+  test_bug_reset_realigns_swing();
+  test_bug_euclid_rot_clamp();
+  test_bug_app_switch_fresh_state();
+  test_bug_skew_zero();
+  test_bug_cv_mod_symmetric();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

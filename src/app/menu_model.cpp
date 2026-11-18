@@ -25,7 +25,7 @@ const uint8_t* mode_groups(uint8_t mode) {
   static const uint8_t off[]   = { G_SHAPE, G_END };
   static const uint8_t pul[]   = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
   static const uint8_t lfo[]   = { G_SHAPE, G_CLOCK, G_RANGE, G_XOP, G_MOD, G_END };
-  static const uint8_t ramp[]  = { G_SHAPE, G_CLOCK, G_RANGE, G_XOP, G_END };
+  static const uint8_t ramp[]  = { G_SHAPE, G_CLOCK, G_RANGE, G_XOP, G_MOD, G_END };
   static const uint8_t step[]  = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
   static const uint8_t sh[]    = { G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
   static const uint8_t note[]  = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
@@ -229,7 +229,7 @@ void menu_set_val(uint8_t ch, uint8_t idx, int32_t v, MenuPage pg) {
     p.step_prob[idx - P_SPROB0] = constrain(v, 0, 100);
   } else switch (idx) {
     case P_RATIO: p.ratio = constrain(v, 0, RATIO_COUNT - 1); break;
-    case P_MODE: p.mode = constrain(v, 0, MODE_LAST - 1); break;
+    case P_MODE: channel_set_mode(channels[ch], (uint8_t)constrain(v, 0, MODE_LAST - 1)); break;
     case P_WAVE: p.wave = constrain(v, 0, LFO_LAST - 1); break;
     case P_WIDTH: p.width = constrain(v, 1, 255); break;
     case P_SKEW: p.skew = constrain(v, 0, 255); break;
@@ -250,6 +250,7 @@ void menu_set_val(uint8_t ch, uint8_t idx, int32_t v, MenuPage pg) {
     case P_EUEN: p.eucl_en = v ? 1 : 0; touch_euclid = true; break;
     case P_EULEN: p.eucl_len = constrain(v, 1, EUCLID_MAX_LEN);
                   if (p.eucl_fill > p.eucl_len) p.eucl_fill = p.eucl_len;
+                  if (p.eucl_rot >= p.eucl_len) p.eucl_rot = p.eucl_len - 1;
                   touch_euclid = true; break;
     case P_EUFILL: p.eucl_fill = constrain(v, 0, p.eucl_len); touch_euclid = true; break;
     case P_EUROT: p.eucl_rot = constrain(v, 0, p.eucl_len ? p.eucl_len - 1 : 0); break;
