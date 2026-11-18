@@ -250,7 +250,11 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     if (p.mode == MODE_OFF) {
       if (c.out_mv) { c.out_mv = 0; c.out_dirty = 1; }
       c.gate_state = 0;
-      c.pos_x256 += delta_x256;
+      // Keep tracking the grid so the channel re-enters in phase, but wrap to
+      // the cycle: an unbounded counter overflowed after ~24 h at 120 BPM and,
+      // 2^32 not being a multiple of the period, came back out of phase.
+      const uint32_t off_period = RATIO_TABLE[p.ratio].period_x256;
+      c.pos_x256 = (uint32_t)(((uint64_t)c.pos_x256 + delta_x256) % off_period);
       continue;
     }
 
@@ -349,8 +353,11 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         uint8_t n = p.ratchets ? constrain((int)p.ratchets, 1, 16) : 1;
         // Position within the current sub-slot (0..255). Scaling the 16-bit
         // phase by n keeps every slot equal; 256/n rounded down left a
-        // partial extra slot at the end of the cycle for most n.
-        uint32_t r256 = ((ph16 * n) & 0xFFFFu) >> 8;
+        // partial extra slot at the end of the cycle for most n. Timed from
+        // the gate phase (delay + FLEX slop) like pulse/div, so `delay`
+        // shifts the whole burst train.
+        const uint32_t gate_ph16 = (uint32_t)((uint64_t)gate_ph * 65536 / period);
+        uint32_t r256 = ((gate_ph16 * n) & 0xFFFFu) >> 8;
         bool on = ext_trig ? trig_on
                            : (c.sh_val && r256 < (uint32_t)(p.width ? p.width : 64));
         c.gate_state = on;
@@ -545,10 +552,15 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
     }
 
     if (p.slew && p.mode != MODE_PULSE && p.mode != MODE_DIV && p.mode != MODE_RATCHET && p.mode != MODE_LOGIC) {
-      // Q8 fixed point: with whole-mV state, rises smaller than 256/slew mV
-      // rounded to zero and the output settled short (e.g. -31 mV at slew 8).
+      // One-pole lag with time constant slew*8 ms (what the menu shows, and
+      // the documented 8..2040 ms): per-tick coefficient 1/(slew*8) in Q16 =
+      // 8192/slew. State is mV in Q8 (whole-mV state settled short); the step
+      // rounds away from zero so it always moves at least 1/256 mV and lands
+      // exactly on the target instead of stalling a few mV short.
       const int32_t diff = ((int32_t)mv << 8) - c.filt_x256;
-      c.filt_x256 += (diff * (int32_t)p.slew) >> 8;
+      const int64_t prod = (int64_t)diff * (8192 / p.slew);
+      c.filt_x256 += prod >= 0 ? (int32_t)((prod + 65535) >> 16)
+                               : -(int32_t)((-prod + 65535) >> 16);
       mv = (uint16_t)((c.filt_x256 + 128) >> 8);
     } else {
       c.filt_x256 = (int32_t)mv << 8;

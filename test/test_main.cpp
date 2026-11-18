@@ -904,7 +904,7 @@ static void test_channel_slew() {
   s.p.mode = MODE_LFO; s.p.ratio = 16; s.p.wave = LFO_SQR; s.p.skew = 128;
   s.p.cv_min = 0; s.p.cv_max = 5000; s.p.slew = 16;
   drive(1);
-  CHECK(s.out_mv == 313);                // one lag step: 5000*16/256 = 312.5, rounded
+  CHECK(s.out_mv == 39);                 // one lag step, tau = 16*8 ms: 5000/128 = 39.06
 
   // Slow slew must actually reach its target, rising and falling (whole-mV
   // state used to stall up to 256/slew mV short on the way up).
@@ -1744,6 +1744,75 @@ static void test_bug_ext_stop() {
   suite_ok("bug: stop halts external clock");
 }
 
+// Bug 9: `lag` is a time constant. The menu shows v*8 ms and the wiki documents
+// "off ... ~2 s (8...2040 ms)": a bigger value must be SLOWER, and a step must
+// reach ~63% (one time constant) after about v*8 ms. The filter used slew/256
+// as the per-tick coefficient, so 1 was the slowest (~256 ms) and 255 ~instant.
+static void test_bug_lag_time_constant() {
+  static const uint8_t lags[] = { 1, 8, 32, 125, 255 };
+  uint32_t prev_t = 0;
+  for (uint8_t lag : lags) {
+    channels_init(DEFAULT_RATIO);
+    Channel &k = channels[0];
+    k.p.mode = MODE_STEP; k.p.cv_min = 0; k.p.cv_max = 10000; k.p.slew = lag;
+    for (int i = 0; i < MAX_STEPS; i++) k.p.steps[i] = 255;
+    k.sh_val = 255;                      // delta 0: hold a 0 -> 10 V step
+    k.filt_x256 = 0;
+    uint32_t t = 0;
+    while (t < 20000 && k.out_mv < 6321) { drive(1, 0); t++; }
+    char shown[16];
+    menu_fmt_val(0, P_SLEW, MENU_CHANNEL, shown, sizeof(shown));
+    const uint32_t want = (uint32_t)lag * 8;
+    const bool ok = t * 10 >= want * 8 && t * 10 <= want * 12 + 20;   // ±20% (+2 ms)
+    if (!ok) printf("  lag %u (menu \"%s\"): 63%% after %u ms, want ~%u ms\n", lag, shown, t, want);
+    CHECK(ok);
+    CHECK(t > prev_t);                   // bigger lag is strictly slower
+    prev_t = t;
+  }
+  suite_ok("bug: lag matches its displayed time constant");
+}
+
+// Bug 10: `delay` is a ratch shape param (menu + wiki) but the ratchet gate
+// was timed from the undelayed phase, so delay had no effect. A delay of d
+// (256ths of the cycle) must shift the whole burst train d/256 of a cycle late.
+static void test_bug_ratchet_delay() {
+  static uint8_t trace[2][1024];
+  static const uint8_t delays[2] = { 0, 32 };
+  for (uint8_t k = 0; k < 2; k++) {
+    channels_init(DEFAULT_RATIO);
+    Channel &c = channels[0];
+    c.p.mode = MODE_RATCHET; c.p.ratio = 16; c.p.ratchets = 4; c.p.width = 64;
+    c.p.delay = delays[k]; c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0;
+    c.p.eucl_en = 0; c.p.prob = 100;
+    for (uint32_t t = 0; t < 1024; t++) { drive(1); trace[k][t] = c.gate_state; }
+  }
+  // delta=96: one cycle per 256 ticks, so delay 32 = 32 ticks late (half of
+  // a 64-tick sub-slot, so an ignored delay cannot line up by accident).
+  int mismatch = 0;
+  for (uint32_t t = 512; t < 1024; t++) if (trace[1][t] != trace[0][t - 32]) mismatch++;
+  if (mismatch) printf("  ratchet delay 32: %d ticks differ from the 32-tick-shifted trace\n", mismatch);
+  CHECK(mismatch == 0);
+  suite_ok("bug: ratchet honours delay");
+}
+
+// Bug 11: an `off` channel kept accumulating phase without wrapping it to its
+// cycle. After ~24 h at 120 BPM the uint32 overflowed and, since 2^32 is not a
+// multiple of the cycle, the channel came back permanently out of phase with
+// a twin that had been running all along. Big deltas reach the wrap quickly.
+static void test_bug_off_phase_wrap() {
+  channels_init(DEFAULT_RATIO);
+  Channel &off = channels[0], &on = channels[1];
+  off.p.mode = MODE_OFF;   off.p.ratio = 16;
+  on.p.mode  = MODE_PULSE; on.p.ratio  = 16;
+  channels_reset();
+  drive(300, 0x01000001u);               // 300 * ~2^24 > 2^32: crosses the wrap
+  off.p.mode = MODE_PULSE;
+  drive(1, 96);
+  CHECK(off.pos_x256 == on.pos_x256);    // still phase-locked to its twin
+  CHECK(off.event_count <= 1);           // no bogus event burst on re-enable
+  suite_ok("bug: off channel stays phase-locked");
+}
+
 int main() {
   test_euclid();
   test_clock();
@@ -1790,6 +1859,9 @@ int main() {
   test_bug_defaults_swing();
   test_bug_draw_consistent_page();
   test_bug_ext_stop();
+  test_bug_lag_time_constant();
+  test_bug_ratchet_delay();
+  test_bug_off_phase_wrap();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }
