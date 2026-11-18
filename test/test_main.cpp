@@ -34,6 +34,7 @@
 extern uint32_t mock_time_us;
 extern uint16_t mock_dac_mv[];
 extern void (*mock_now_hook)();
+extern uint64_t mock_pins_low;
 
 static int g_checks = 0, g_failed = 0;
 #define CHECK(cond)                                                        \
@@ -1927,6 +1928,103 @@ static void test_bug_clock_large_gap() {
   suite_ok("bug: large external clock timeout");
 }
 
+// Bug 15: two built-in scale masks held the wrong notes. Iwato is
+// 1 b2 4 b5 b7 = {0,1,5,6,10}; blues major is 1 2 b3 3 5 6 = {0,2,3,4,7,9}.
+static int scale_index(const char *name) {
+  for (int i = 0; i < SCALE_COUNT; i++)
+    if (strcmp(SCALE_NAMES[i], name) == 0) return i;
+  return -1;
+}
+
+static void test_bug_scale_masks() {
+  const int iwato = scale_index("iwato"), blsmaj = scale_index("blsmaj");
+  CHECK(iwato >= 0 && blsmaj >= 0);
+  if (iwato >= 0) CHECK(scale_mask((uint8_t)iwato, USER_SCALES) == 0x463);
+  if (blsmaj >= 0) CHECK(scale_mask((uint8_t)blsmaj, USER_SCALES) == 0x29D);
+  suite_ok("bug: iwato / blues major scale masks");
+}
+
+// Bug 16: editing swing in the middle of a quarter permanently shifted the
+// grid. The warp assumed the current quarter had been swung with the NEW
+// amount from its start, so that quarter emitted more or less than QT and
+// every later boundary stayed off by the difference (19 % of a quarter for
+// 0 -> 40 at the half-way point).
+static void test_bug_swing_change_mid_beat() {
+  const uint32_t QT = (uint32_t)TICKS_PER_QUARTER * 256;
+  masterClock = MasterClock{};
+  masterClock.bpm_cent = 12000;          // 500 ticks = exactly one quarter
+  masterClock.source = 0; masterClock.running = true; masterClock.swing = 0;
+  masterClock.reset_phase();
+
+  uint32_t total = 0;
+  run_clock(250, &total);
+  masterClock.swing = 40;                // switched on half-way through
+  run_clock(250, &total);
+  CHECK(total == QT);                    // quarter boundary still on time
+
+  // Several edits inside one quarter, ending with swing off again.
+  run_clock(100, &total); masterClock.swing = 63;
+  run_clock(150, &total); masterClock.swing = 10;
+  run_clock(100, &total); masterClock.swing = 0;
+  run_clock(150, &total);
+  CHECK(total == 2 * QT);
+
+  // ... and the grid stays locked afterwards.
+  masterClock.swing = 33;
+  run_clock(1500, &total);
+  CHECK(total == 5 * QT);
+
+  // No phase jump: dropping hard swing early in the first eighth must not
+  // dump the warp difference (~2400 units) into a single tick.
+  masterClock.reset_phase();
+  masterClock.swing = 63;
+  total = 0;
+  run_clock(100, &total);
+  masterClock.swing = 0;
+  uint32_t max_step = 0;
+  for (int i = 0; i < 400; i++) {
+    masterClock.tick();
+    const uint32_t d = masterClock.take_delta();
+    if (d > max_step) max_step = d;
+    total += d;
+  }
+  CHECK(total == QT);
+  CHECK(max_step <= 100);                // straight is ~49 units/tick
+  masterClock = MasterClock{};
+  suite_ok("bug: swing edit mid-quarter keeps the grid");
+}
+
+// Bug 17: holding the RIGHT push resets every channel to phase 0, but the
+// master clock kept its position inside the swung quarter. With swing on,
+// the channels then restarted mid-quarter and the swing landed on the wrong
+// eighths. After the reset, the clock must swing exactly like a fresh start.
+static void test_bug_reset_realigns_swing() {
+  masterClock = MasterClock{};
+  masterClock.bpm_cent = 12000; masterClock.source = 0;
+  masterClock.running = true; masterClock.swing = 63;
+  masterClock.reset_phase();
+  uint32_t ref = 0;
+  run_clock(250, &ref);                  // fresh start: first half of the raw quarter
+
+  masterClock.reset_phase();
+  run_clock(250, nullptr);               // now mid-quarter
+  channels_init(DEFAULT_RATIO);
+  channels[0].pos_x256 = 12345;
+  ui_test_reset(1);
+  mock_pins_low = 1ull << PIN_ENC_R_SW;  // hold the RIGHT push
+  for (int i = 0; i < 700 && channels[0].pos_x256 != 0; i++) ui_service();
+  CHECK(channels[0].pos_x256 == 0);      // long press fired
+  mock_pins_low = 0;
+  for (int i = 0; i < 20; i++) ui_service();
+
+  uint32_t after = 0;
+  run_clock(250, &after);
+  CHECK(after == ref);                   // first (late) eighth, like a fresh start
+  ui_nav = UiNav{};
+  masterClock = MasterClock{};
+  suite_ok("bug: channel reset realigns the swing quarter");
+}
+
 int main() {
   test_euclid();
   test_clock();
@@ -1979,6 +2077,9 @@ int main() {
   test_bug_crossop_gate_levels();
   test_bug_note_scale_bottom();
   test_bug_clock_large_gap();
+  test_bug_scale_masks();
+  test_bug_swing_change_mid_beat();
+  test_bug_reset_realigns_swing();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

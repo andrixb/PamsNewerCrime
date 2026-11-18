@@ -16,6 +16,10 @@ public:
   void tick();
   void pulse_external();
   void reset_phase();
+  // Restart the internal quarter (swing warp) at its first eighth, keeping
+  // tempo and external-sync state. Call alongside channels_reset() so the
+  // channels' phase 0 lines up with the start of the swung quarter.
+  void restart_beat() { raw_beat = 0; out_beat = 0; beat_blend = false; }
   uint32_t take_delta();
   // Measured external tempo in 1/100 BPM, 0 = no tempo yet. Not limited to
   // the internal BPM range (a ppqn set too low reads as a very high tempo).
@@ -28,6 +32,12 @@ private:
   uint32_t delta_x256 = 0;
   uint64_t frac_acc = 0;
   uint32_t raw_beat = 0;   // un-warped phase within the current quarter (x256)
+  uint32_t out_beat = 0;   // warped phase already emitted in the current quarter
+  uint8_t warp_swing = 0;  // swing amount out_beat was emitted under
+  // Swing edited mid-quarter: finish that quarter on a straight line from
+  // (blend_r0, blend_o0) to (QT, QT) instead of jumping onto the new warp.
+  bool beat_blend = false;
+  uint32_t blend_r0 = 0, blend_o0 = 0;
   volatile uint32_t ext_pulses = 0;
   uint32_t consumed_pulses = 0;
   volatile uint32_t ext_last_pulse_us = 0;  // time of the most recent external pulse

@@ -15,6 +15,13 @@ static uint32_t warp_raw(uint32_t rb, uint32_t rawA, uint32_t half) {
   return half + (uint32_t)((uint64_t)(rb - rawA) * half / seg2);
 }
 
+// Split point of the raw quarter for a swing amount (QT/2 = straight, where
+// warp_raw() is the identity).
+static uint32_t swing_raw_a(uint8_t swing) {
+  uint32_t rawA = QT / 2 + (uint32_t)((uint64_t)QT * swing / 128);
+  return rawA >= QT ? QT - 1 : rawA;
+}
+
 void MasterClock::pulse_external() {
   uint32_t now = clock_now_us();
   if (ext_restart) {
@@ -55,6 +62,9 @@ void MasterClock::pulse_external() {
 void MasterClock::reset_phase() {
   frac_acc = 0;
   raw_beat = 0;
+  out_beat = 0;
+  warp_swing = swing;
+  beat_blend = false;
   consumed_pulses = ext_pulses;
   ext_last_pulse_us = 0;
   for (uint8_t i = 0; i < EXT_DT_HIST; i++) ext_dt_hist[i] = 0;
@@ -78,6 +88,20 @@ void MasterClock::tick() {
   if (source == 0) {
     if (!running) return;
     uint32_t bpm = constrain(bpm_cent, BPM_MIN, BPM_MAX);
+    const uint32_t half = QT / 2;
+    // Swing edited mid-quarter. Jumping straight onto the new warp would make
+    // this quarter emit more or less than QT and shift the grid for good (or
+    // jump/stall the output). Instead, keep the wall-clock position (raw_beat)
+    // and glide linearly from the phase already emitted to the quarter end;
+    // the new swing shape takes over from the next quarter.
+    if (swing != warp_swing) {
+      warp_swing = swing;
+      if (out_beat != warp_raw(raw_beat, swing_raw_a(swing), half)) {
+        beat_blend = true;
+        blend_r0 = raw_beat;
+        blend_o0 = out_beat;
+      }
+    }
     // units/ms = 24576 (per quarter) * bpm_cent / (60000 ms/min * 100 cent)
     frac_acc += (uint64_t)TICKS_PER_QUARTER * 256 * bpm;
     uint64_t denom = 60ULL * 1000ULL * (CONTROL_RATE_HZ / 1000) * 100;
@@ -85,29 +109,32 @@ void MasterClock::tick() {
     if (!whole) return;
     frac_acc -= (uint64_t)whole * denom;
 
-    if (!swing) {
+    if (!swing && !beat_blend) {
       delta_x256 += whole;
       raw_beat += whole;
       if (raw_beat >= QT) raw_beat -= QT;
+      out_beat = raw_beat;               // straight: warp is the identity
       return;
     }
 
-    // Distribute `whole` raw units through the swing warp, never crossing a
-    // segment/grid boundary within a single delta step.
-    uint32_t rawA = QT / 2 + (uint32_t)((uint64_t)QT * swing / 128);
-    if (rawA >= QT) rawA = QT - 1;
-    uint32_t half = QT / 2;
+    // Distribute `whole` raw units through the swing warp (or the blend line),
+    // never crossing a segment/grid boundary within a single delta step.
+    // Emission is measured against out_beat, so every quarter emits exactly QT.
+    uint32_t rawA = swing_raw_a(swing);
     uint32_t add = whole;
     while (add) {
-      uint32_t bound = (raw_beat < rawA) ? rawA : QT;
+      uint32_t bound = (beat_blend || raw_beat >= rawA) ? QT : rawA;
       uint32_t seg_left = bound - raw_beat;
       uint32_t step = add < seg_left ? add : seg_left;
-      uint32_t o0 = warp_raw(raw_beat, rawA, half);
       uint32_t rb2 = raw_beat + step;
-      uint32_t o1 = warp_raw(rb2 < QT ? rb2 : QT, rawA, half);
-      delta_x256 += (o1 - o0);
+      uint32_t o1;
+      if (rb2 >= QT) o1 = QT;
+      else if (beat_blend)
+        o1 = blend_o0 + (uint32_t)((uint64_t)(rb2 - blend_r0) * (QT - blend_o0) / (QT - blend_r0));
+      else o1 = warp_raw(rb2, rawA, half);
+      if (o1 > out_beat) { delta_x256 += o1 - out_beat; out_beat = o1; }
       raw_beat = rb2;
-      if (raw_beat >= QT) raw_beat -= QT;
+      if (raw_beat >= QT) { raw_beat -= QT; out_beat = 0; beat_blend = false; }
       add -= step;
     }
   } else {

@@ -56,12 +56,12 @@ static const uint16_t SCALE_MASKS[] = {
   0xD53,  // enigmatic
   0x18D,  // hirajoshi
   0x1A3,  // in
-  0x8C3,  // iwato
+  0x463,  // iwato
   0x655,  // prometheus
   0x4D3,  // tritone
   0xB6D,  // diminished
   0x999,  // augmented
-  0xAF5,  // blues major
+  0x29D,  // blues major
 };
 const uint8_t SCALE_COUNT = (sizeof(SCALE_MASKS) / sizeof(SCALE_MASKS[0])) + USER_SCALE_COUNT;
 

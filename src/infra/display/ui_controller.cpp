@@ -209,6 +209,9 @@ void ui_service() {
   if (btn_enc_r_sw.just_pressed()) { enc_sw_down_tick = ui_ticks; enc_r_sw_handled = false; }
   else if (btn_enc_r_sw.pressed() && !enc_r_sw_handled
            && ui_ticks - enc_sw_down_tick == kLongPressTicks) {
+    // Restart the master's swung quarter with the channels, or swing would
+    // land on the wrong eighths of their freshly zeroed grid.
+    masterClock.restart_beat();
     channels_reset(); enc_r_sw_handled = true;
   } else if (btn_enc_r_sw.released() && !enc_r_sw_handled) {
     if (is_sys()) pending_action = ui_nav.param_idx;
