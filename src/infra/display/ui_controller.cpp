@@ -183,7 +183,7 @@ void ui_service() {
     // Either encoder push ASSIGNS the highlighted app and closes (this is the
     // "select" action - a press, matching how Phazerville commits a menu pick).
     if (btn_enc_sw.released() || btn_enc_r_sw.released()) {
-      channels[ch_of_page()].p.mode = ui_nav.app_sel;
+      channel_set_mode(channels[ch_of_page()], ui_nav.app_sel);
       mark_dirty();
       ui_nav.app_menu = false;
       ui_nav.param_idx = 0;

@@ -48,6 +48,8 @@ static int resolve_in(uint8_t sel, uint8_t cv1, uint8_t cv2) {
 
 static void apply_cv(ChannelParams &p, uint8_t src, int8_t scale, int val) {
   if (!src || !scale) return;
+  // Divisions below (not >>) truncate toward zero, so +scale and -scale move
+  // a parameter by the same amount; >> floored negatives one step further.
   int32_t m = (int32_t)scale * val / 2;
   switch (src) {
     case CVP_RANGE: {
@@ -60,18 +62,18 @@ static void apply_cv(ChannelParams &p, uint8_t src, int8_t scale, int val) {
       p.cv_max = c + span / 2;
       break;
     }
-    case CVP_WIDTH: p.width  = constrain(p.width + (m >> 4), 1, 255); break;
-    case CVP_PHASE: p.phase  = constrain(p.phase + (m >> 4), 0, 255); break;
-    case CVP_DELAY: p.delay  = constrain(p.delay + (m >> 4), 0, 255); break;
-    case CVP_PROB:  p.prob   = constrain(p.prob + (m >> 6), 0, 100); break;
-    case CVP_RATIO: p.ratio  = constrain((int)p.ratio + (m >> 7), 0, RATIO_COUNT - 1); break;
-    case CVP_DIV:   p.div_a  = constrain((int)p.div_a + (m >> 7), -32, 32); break;
-    case CVP_SKEW:  p.skew   = constrain(p.skew + (m >> 4), 0, 255); break;
-    case CVP_ATK:   p.env_a  = constrain(p.env_a + (m >> 4), 0, 255); break;
-    case CVP_DEC:   p.env_d  = constrain(p.env_d + (m >> 4), 0, 255); break;
-    case CVP_SLEW:  p.slew   = constrain(p.slew + (m >> 4), 0, 255); break;
-    case CVP_SMOOTH: p.smooth = constrain(p.smooth + (m >> 4), 0, 255); break;
-    case CVP_BURST:  p.burst  = constrain(p.burst + (m >> 4), 0, 255); break;
+    case CVP_WIDTH: p.width  = constrain(p.width + (m / 16), 1, 255); break;
+    case CVP_PHASE: p.phase  = constrain(p.phase + (m / 16), 0, 255); break;
+    case CVP_DELAY: p.delay  = constrain(p.delay + (m / 16), 0, 255); break;
+    case CVP_PROB:  p.prob   = constrain(p.prob + (m / 64), 0, 100); break;
+    case CVP_RATIO: p.ratio  = constrain((int)p.ratio + (m / 128), 0, RATIO_COUNT - 1); break;
+    case CVP_DIV:   p.div_a  = constrain((int)p.div_a + (m / 128), -32, 32); break;
+    case CVP_SKEW:  p.skew   = constrain(p.skew + (m / 16), 0, 255); break;
+    case CVP_ATK:   p.env_a  = constrain(p.env_a + (m / 16), 0, 255); break;
+    case CVP_DEC:   p.env_d  = constrain(p.env_d + (m / 16), 0, 255); break;
+    case CVP_SLEW:  p.slew   = constrain(p.slew + (m / 16), 0, 255); break;
+    case CVP_SMOOTH: p.smooth = constrain(p.smooth + (m / 16), 0, 255); break;
+    case CVP_BURST:  p.burst  = constrain(p.burst + (m / 16), 0, 255); break;
     default: break;
   }
 }
@@ -98,32 +100,44 @@ void channels_init(uint8_t default_ratio) {
   channels_reset();
 }
 
+// Per-app state: what a channel must forget when it starts (or switches) app.
+// Phase, event count, slew state and the current output are NOT touched, so a
+// switched channel stays on the grid and glides from where it was.
+static void reset_mode_state(Channel &c) {
+  c.gate_state = 0;
+  c.step_idx = 0;
+  // t=0 is the step-1 slot: STEP holds its first value until the first
+  // event advances it. Gate modes use sh_val=1 as "window open".
+  c.sh_val = c.p.mode == MODE_STEP ? c.p.steps[0] : 1;
+  c.env_t = 0;
+  c.wv = 128;
+  c.wtar = 128;
+  c.wsm = 128;
+  c.last_note = 0;
+  c.hold_mv = 0;
+  c.x_hi = 0;
+  c.ev_off = 0;
+  c.pend = 0;
+  c.rate256 = 256;
+  c.gate_rem = 0;
+}
+
 void channels_reset() {
   for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
     Channel &c = channels[i];
     c.pos_x256 = 0;
     c.event_count = 0;
-    c.gate_state = 0;
-    c.step_idx = 0;
-    // t=0 is the step-1 slot: STEP holds its first value until the first
-    // event advances it. Gate modes use sh_val=1 as "window open".
-    c.sh_val = c.p.mode == MODE_STEP ? c.p.steps[0] : 1;
-
-    c.env_t = 0;
-    c.wv = 128;
-    c.wtar = 128;
-    c.wsm = 128;
-    c.last_note = 0;
+    reset_mode_state(c);
     c.out_mv = 0;
     c.filt_x256 = 0;
-    c.hold_mv = 0;
-    c.x_hi = 0;
-    c.ev_off = 0;
-    c.pend = 0;
-    c.rate256 = 256;
-    c.gate_rem = 0;
     c.out_dirty = 1;   // hardware must re-assert every output (was dac_write(i, 0))
   }
+}
+
+void channel_set_mode(Channel &c, uint8_t mode) {
+  if (mode >= MODE_LAST || mode == c.p.mode) return;
+  c.p.mode = mode;
+  reset_mode_state(c);
 }
 
 uint8_t channels_take_outputs(uint16_t out_mv[NUM_OUTPUTS]) {
@@ -371,12 +385,12 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         break;
       }
       case MODE_LFO: {
-        frac = wave_value(p.wave, p.skew ? p.skew : 128, ph16);
+        frac = wave_value(p.wave, p.skew, ph16);
         c.gate_state = frac > 1024;
         break;
       }
       case MODE_RAMP: {
-        uint32_t rise = (uint32_t)constrain((int16_t)(p.skew ? p.skew : 128), 1, 254) << 8;
+        uint32_t rise = (uint32_t)constrain((int16_t)p.skew, 1, 254) << 8;
         if (ph16 < rise) frac = (uint16_t)(ph16 * 2048 / rise);
         else frac = (uint16_t)((65535 - ph16) * 2048 / (65535 - rise));
         c.gate_state = ph16 < rise;

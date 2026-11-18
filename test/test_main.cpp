@@ -2025,6 +2025,103 @@ static void test_bug_reset_realigns_swing() {
   suite_ok("bug: channel reset realigns the swing quarter");
 }
 
+// Bug 18: shortening `eu length` left `eu rot` past the new length. The menu
+// itself never allows rot >= len, and a load clamps it, so the saved patch
+// came back different from what was playing.
+static void test_bug_euclid_rot_clamp() {
+  channels_init(DEFAULT_RATIO);
+  menu_set_val(0, P_EULEN, 8, MENU_CHANNEL);
+  menu_set_val(0, P_EUROT, 7, MENU_CHANNEL);
+  CHECK(channels[0].p.eucl_rot == 7);
+  menu_set_val(0, P_EULEN, 4, MENU_CHANNEL);
+  CHECK(channels[0].p.eucl_rot <= 3);
+
+  const ChannelParams before = channels[0].p;
+  StoreBlob b;
+  capture_state(b);
+  restore_state(b);
+  CHECK(memcmp(&before, &channels[0].p, sizeof(before)) == 0);   // round-trips
+  suite_ok("bug: euclid rotation follows a shorter length");
+}
+
+// Bug 19: picking an app in the APP menu only swapped `mode`; per-mode state
+// stayed from the old app. Switching a pulse channel to `step` played the
+// pulse's gate flag (~0 V) instead of step 1 until the next event, and the
+// sequence resumed from wherever the old step index was.
+static void test_bug_app_switch_fresh_state() {
+  channels_init(DEFAULT_RATIO);
+  Channel &c = channels[0];
+  setup_pulse(c, 16, 64);
+  c.p.steps[0] = 200; c.p.steps[1] = 10; c.p.step_len = 4;
+  channels_reset();
+  drive(300);                            // one event in: gate flag latched
+  c.step_idx = 2;                        // stale index from an earlier step run
+
+  ui_test_reset(1);
+  ui_nav.app_menu = true;
+  ui_nav.app_sel = MODE_STEP;
+  btn_enc_r_sw.s = 0x3F;                 // next poll: RIGHT push released = assign
+  ui_service();
+  CHECK(c.p.mode == MODE_STEP);
+  CHECK(!ui_nav.app_menu);
+
+  drive(1);                              // mid-cycle, no event yet
+  CHECK(c.sh_val == 200);                // holds step 1
+  CHECK(c.out_mv > 3000);                // 200/255 of 5 V, not ~0 mV
+  drive(255);                            // crosses the next event
+  CHECK(c.sh_val == 10);                 // advances to step 2
+  ui_nav = UiNav{};
+  suite_ok("bug: app switch starts the new app fresh");
+}
+
+// Bug 20: LFO and ramp treated skew 0 as 128 while the menu showed "0".
+// 0 must behave as the minimum: a square with 0 duty, a ramp that rises
+// immediately (the same as skew 1).
+static void test_bug_skew_zero() {
+  auto trace = [](uint8_t mode, uint8_t wave, uint8_t skew, uint16_t *out) {
+    channels_init(DEFAULT_RATIO);
+    Channel &c = channels[0];
+    c.p.mode = mode; c.p.wave = wave; c.p.skew = skew; c.p.ratio = 16;
+    c.p.cv_min = 0; c.p.cv_max = 5000; c.p.slew = 0;
+    channels_reset();
+    for (uint32_t t = 0; t < 256; t++) { drive(1); out[t] = c.out_mv; }
+  };
+  static uint16_t a[256], b[256];
+  trace(MODE_LFO, LFO_SQR, 0, a);
+  int high = 0;
+  for (int t = 0; t < 256; t++) if (a[t] > 0) high++;
+  CHECK(high == 0);                      // 0 % duty, not 50 %
+
+  trace(MODE_RAMP, 0, 0, a);
+  trace(MODE_RAMP, 0, 1, b);
+  CHECK(memcmp(a, b, sizeof(a)) == 0);   // skew 0 == skew 1 (fastest rise)
+  CHECK(a[128] < 3000);                  // falling half-way, not at a 50 % peak
+  suite_ok("bug: skew 0 is the minimum, not 128");
+}
+
+// Bug 21: CV modulation used `m >> n`, which floors negative values. A small
+// CV with scale -1 moved the target by -1 while scale +1 moved it by 0.
+static void test_bug_cv_mod_symmetric() {
+  auto width_on = [](int8_t scale) {
+    channels_init(DEFAULT_RATIO);
+    Channel &c = channels[0];
+    setup_pulse(c, 16, 64);
+    c.p.cv_src1 = CVP_WIDTH; c.p.cv_scale1 = scale; c.p.cv_in1 = 0;
+    channels_reset();
+    int on = 0;
+    for (uint32_t t = 0; t < 512; t++) {
+      channels_update(96, 10, 0, {USER_SCALES});   // small CV: |m| = 5
+      if (t >= 256 && c.gate_state) on++;
+    }
+    return on;
+  };
+  CHECK(width_on(0) == 64);
+  CHECK(width_on(1) == 64);
+  CHECK(width_on(-1) == 64);             // was 63: floor(-5/16) = -1
+  CHECK(width_on(-127) == 128 - width_on(127));   // equal and opposite
+  suite_ok("bug: CV modulation is symmetric around zero");
+}
+
 int main() {
   test_euclid();
   test_clock();
@@ -2080,6 +2177,10 @@ int main() {
   test_bug_scale_masks();
   test_bug_swing_change_mid_beat();
   test_bug_reset_realigns_swing();
+  test_bug_euclid_rot_clamp();
+  test_bug_app_switch_fresh_state();
+  test_bug_skew_zero();
+  test_bug_cv_mod_symmetric();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }
