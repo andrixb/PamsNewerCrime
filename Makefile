@@ -7,13 +7,17 @@ ENV    ?= teensy40
 
 CXX      ?= g++
 TEST_BIN := build/test_pnc
-TEST_SRC := test/test_main.cpp test/mock_hw.cpp \
+TEST_SRC := test/test_main.cpp test/mock_hw.cpp test/mock_ui.cpp \
             src/domain/euclid.cpp src/domain/scales.cpp \
             src/app/clock.cpp src/app/channel.cpp \
             src/app/serialization.cpp src/app/patch.cpp \
             src/app/menu_model.cpp \
-            src/infra/hal_storage.cpp
+            src/infra/hal_storage.cpp src/infra/hal_input.cpp \
+            src/infra/display/ui_controller.cpp src/infra/display/renderer.cpp
+# Integer divide-by-zero traps (no sanitizer runtime needed): ARM64 and the
+# Teensy's Cortex-M7 silently return 0 instead, which hides the UB.
 TESTFLAGS := -std=gnu++17 -Wall -Wextra -Wno-unused-function \
+             -fsanitize=integer-divide-by-zero -fsanitize-undefined-trap-on-error \
              -Itest/mock -Isrc -DNUM_OUTPUTS=4
 
 # Layer proof: domain/ + app/ must compile with NO Arduino/mock on the include

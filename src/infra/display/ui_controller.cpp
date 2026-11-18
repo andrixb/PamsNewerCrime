@@ -21,23 +21,29 @@ static bool enc_r_sw_handled = false;
 static bool enc_l_sw_handled = false;
 #define kLongPressTicks 500u
 
-// Raw P_* index for a browsable position on the current channel page.
-static uint8_t ctl_cur_slen() { return channels[ch_of_page()].p.step_len; }
-
-uint8_t ctl_param_count() {
-  if (is_master()) return MASTER_PARAM_COUNT;
-  if (is_sys()) return sys_action_count();
-  return chan_param_count(channels[ch_of_page()].p.mode, ctl_cur_slen());
+uint8_t ctl_param_count(const UiNav &n) {
+  if (is_master(n)) return MASTER_PARAM_COUNT;
+  if (is_sys(n)) return sys_action_count();
+  const ChannelParams &p = channels[ch_of_page(n)].p;
+  return chan_param_count(p.mode, p.step_len);
 }
 
-uint8_t ctl_raw_idx(uint8_t pos) {
-  return app_param_at(channels[ch_of_page()].p.mode, pos, ctl_cur_slen());
+// Raw P_* index for a browsable position on a channel page.
+uint8_t ctl_raw_idx(const UiNav &n, uint8_t pos) {
+  const ChannelParams &p = channels[ch_of_page(n)].p;
+  return app_param_at(p.mode, pos, p.step_len);
 }
+
+uint8_t ctl_param_count() { return ctl_param_count(ui_nav); }
+uint8_t ctl_raw_idx(uint8_t pos) { return ctl_raw_idx(ui_nav, pos); }
 
 static uint8_t browsable_raw() { return is_chan() ? ctl_raw_idx(ui_nav.param_idx) : ui_nav.param_idx; }
 
 static void adjust(int8_t d) {
   if (is_sys() || ui_nav.app_menu) return;
+  // An `off` channel has no parameters: nothing is selected, so nothing to
+  // edit (app_param_at's fallback would otherwise edit the hidden ratio).
+  if (is_chan() && !ctl_param_count()) return;
   MenuPage pg = is_master() ? MENU_MASTER : MENU_CHANNEL;
   uint8_t ch = is_master() ? 0 : ch_of_page();
   uint8_t raw = browsable_raw();
@@ -206,7 +212,10 @@ void ui_service() {
     channels_reset(); enc_r_sw_handled = true;
   } else if (btn_enc_r_sw.released() && !enc_r_sw_handled) {
     if (is_sys()) pending_action = ui_nav.param_idx;
-    else if (is_chan()) ui_nav.param_idx = (ui_nav.param_idx + 1) % ctl_param_count();
+    else if (is_chan()) {
+      const uint8_t cnt = ctl_param_count();   // 0 on an `off` channel
+      if (cnt) ui_nav.param_idx = (ui_nav.param_idx + 1) % cnt;
+    }
   }
 
   // LEFT push: tap = run/stop; hold-release = open the app menu (channel pages).

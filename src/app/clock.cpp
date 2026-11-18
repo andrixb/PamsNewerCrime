@@ -123,18 +123,22 @@ void MasterClock::tick() {
     uint32_t newp = pulses - consumed_pulses;
     if (newp) {
       consumed_pulses = pulses;
-      uint32_t frac = QT - t256 * ppqn;
-      // ext_ahead was emitted against the pulse size in force at the time. If
-      // ext ppqn was raised since, it can exceed the new (smaller) t256; the
-      // unsigned subtraction then wrapped into a ~4e9 phase jump. Credit at
-      // most what this pulse contributes.
-      const uint32_t owed = newp * t256;
-      delta_x256 += owed > ext_ahead ? owed - ext_ahead : 0;
+      // Stopped (`run` = stop): pulses are swallowed without moving the phase,
+      // but the tempo read-out below keeps tracking the incoming clock.
+      if (running) {
+        uint32_t frac = QT - t256 * ppqn;
+        // ext_ahead was emitted against the pulse size in force at the time. If
+        // ext ppqn was raised since, it can exceed the new (smaller) t256; the
+        // unsigned subtraction then wrapped into a ~4e9 phase jump. Credit at
+        // most what this pulse contributes.
+        const uint32_t owed = newp * t256;
+        delta_x256 += owed > ext_ahead ? owed - ext_ahead : 0;
+        frac_acc += (uint64_t)newp * frac;
+        uint32_t extra = (uint32_t)(frac_acc / ppqn);
+        if (extra) { frac_acc -= (uint64_t)extra * ppqn; delta_x256 += extra; }
+      }
       ext_ahead = 0;
       ext_interp_acc = 0;
-      frac_acc += (uint64_t)newp * frac;
-      uint32_t extra = (uint32_t)(frac_acc / ppqn);
-      if (extra) { frac_acc -= (uint64_t)extra * ppqn; delta_x256 += extra; }
 
       if (ext_avg_us > 200.0f) {
         float beats = ext_avg_us / 1e6f * ppqn;
@@ -151,13 +155,20 @@ void MasterClock::tick() {
 
     const float avg = ext_avg_us;
     if (avg <= 0.0f) return;                   // no tempo yet: pulses only
-    uint32_t gap = clock_now_us() - ext_last_pulse_us;
-    if (gap > (uint32_t)(avg * 4.0f)) {        // clock stopped
+    // Read the last-pulse stamp BEFORE sampling the time (separate statements
+    // fix the order). The TR1 ISR outranks this tick, so a pulse landing in
+    // between would otherwise make last > now and wrap the gap into a false
+    // timeout. A negative gap (pulse just arrived) is simply "not stopped".
+    const uint32_t last = ext_last_pulse_us;
+    const uint32_t now = clock_now_us();
+    const int32_t gap = (int32_t)(now - last);
+    if (gap > (int32_t)(avg * 4.0f)) {         // clock stopped
       ext_avg_us = 0.0f;
       ext_bpm_cent = 0;
       ext_restart = true;
       return;
     }
+    if (!running) return;                      // stopped: hold the phase
     const uint32_t avg_us = (uint32_t)avg;
     if (!avg_us) return;
     ext_interp_acc += (uint64_t)t256 * (1000000u / CONTROL_RATE_HZ);
