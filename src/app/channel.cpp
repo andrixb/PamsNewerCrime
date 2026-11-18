@@ -238,6 +238,12 @@ static int window_semis(const ChannelParams &p) {
 static int snap_semi(int pos, uint16_t mask, int max_semi) {
   int q = quantize_semi(pos, mask);
   while (q > 0 && (q > max_semi || !((mask >> (q % 12)) & 1))) q--;
+  if ((mask >> (q % 12)) & 1) return q;
+  // Sparse scales whose lowest note is above position 0 (e.g. a user scale
+  // containing only semitone 11) have no in-scale tone below: search upward
+  // instead of returning the off-scale fallback note 0.
+  for (int r = 1; r <= max_semi; r++)
+    if ((mask >> (r % 12)) & 1) return r;
   return q;
 }
 
@@ -519,22 +525,23 @@ void channels_update(uint32_t delta_x256, uint8_t cv1, uint8_t cv2,
         uint8_t ch = p.xsrc - 2;
         a = ch < NUM_OUTPUTS ? channels[ch].out_mv : 0;
       }
-      bool ahi = a >= (DAC_MAX_MV / 2);  // gate-high threshold for logic ops
-      bool rise = (a >= (DAC_MAX_MV / 10)) && !c.x_hi;
-      c.x_hi = (a >= (DAC_MAX_MV / 10));
+      const bool a_hi = a >= (DAC_MAX_MV / 10);   // gate-high for logic ops
+      const bool own_hi = mv >= (DAC_MAX_MV / 10);
+      const bool rise = a_hi && !c.x_hi;
+      c.x_hi = a_hi;
       int32_t t;
       switch (p.xop) {
         case XOP_MIX:  mv = (uint16_t)(((uint32_t)mv + a) / 2); break;
-        case XOP_MASK: if (a < (DAC_MAX_MV / 10)) mv = 0; break;
-        case XOP_NOT:  if (a >= (DAC_MAX_MV / 10)) mv = 0; break;  // inverse of MASK
+        case XOP_MASK: if (!a_hi) mv = 0; break;
+        case XOP_NOT:  if (a_hi) mv = 0; break;    // inverse of MASK
         case XOP_MULT: mv = (uint16_t)(((uint32_t)mv * a) / DAC_MAX_MV); break;
-        case XOP_HOLD: if (a < (DAC_MAX_MV / 10)) mv = c.hold_mv; else c.hold_mv = mv; break;
+        case XOP_HOLD: if (a_hi) mv = c.hold_mv; else c.hold_mv = mv; break;
         case XOP_SH:   if (rise) c.hold_mv = mv; mv = c.hold_mv; break;
         case XOP_ADD:  t = (int32_t)mv + (int32_t)a; mv = t > DAC_MAX_MV ? DAC_MAX_MV : (uint16_t)t; break;
         case XOP_SUB:  t = (int32_t)mv - (int32_t)a; mv = t < 0 ? 0 : (uint16_t)t; break;
-        case XOP_AND:  if (!(mv >= (DAC_MAX_MV / 10) && ahi)) mv = 0; break;
-        case XOP_OR:   if (ahi) mv = mv > a ? mv : a; break;
-        case XOP_XOR:  if (ahi == (mv >= (DAC_MAX_MV / 10))) mv = 0; break;
+        case XOP_AND:  if (!(own_hi && a_hi)) mv = 0; break;
+        case XOP_OR:   if (a_hi) mv = mv > a ? mv : a; break;
+        case XOP_XOR:  if (a_hi == own_hi) mv = 0; break;
         case XOP_SEED: if (rise) rng = 0x9e3779b9u ^ (uint32_t)(mv + 1) * 2654435761u; break;
         default: break;
       }

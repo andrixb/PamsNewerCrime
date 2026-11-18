@@ -162,7 +162,9 @@ void MasterClock::tick() {
     const uint32_t last = ext_last_pulse_us;
     const uint32_t now = clock_now_us();
     const int32_t gap = (int32_t)(now - last);
-    if (gap > (int32_t)(avg * 4.0f)) {         // clock stopped
+    // Compare as float: casting avg*4 (which can exceed INT32_MAX for very
+    // slow external clocks) to int32_t was undefined behaviour.
+    if ((float)gap > avg * 4.0f) {             // clock stopped
       ext_avg_us = 0.0f;
       ext_bpm_cent = 0;
       ext_restart = true;

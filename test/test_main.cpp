@@ -1115,6 +1115,9 @@ static void test_menu_groups() {
   CHECK(app_param_at(MODE_STEP, 3, 8) == P_STEP0 + 1);
   CHECK(strcmp(app_param_group(MODE_PULSE, 0, 8), "pulse") == 0);  // shape = mode name
   CHECK(strcmp(app_param_group(MODE_PULSE, 2, 8), "clock") == 0);  // width,delay then clock
+  // Ramp behaves as the continuous LFO shape and must expose the mod chains.
+  uint8_t rn = chan_param_count(MODE_RAMP, 8);
+  CHECK(strcmp(app_param_group(MODE_RAMP, rn - 1, 8), "mod") == 0);
   suite_ok("menu: groups");
 }
 
@@ -1813,6 +1816,117 @@ static void test_bug_off_phase_wrap() {
   suite_ok("bug: off channel stays phase-locked");
 }
 
+// Bug 12: XOP_HOLD froze the output while the source was LOW, the inverse of
+// the wiki ("freeze while the source is high"). Logic XOPs also used a 5 V
+// source threshold while this channel's own "high" was 1 V, so AND/XOR never
+// fired with the default 3 V gate level.
+static void test_bug_crossop_gate_levels() {
+  channels_init(DEFAULT_RATIO);
+  Channel &a = channels[0], &b = channels[1];
+  setup_pulse(a, 16, 255); a.p.cv_min = 0; a.p.cv_max = 3000;
+  setup_pulse(b, 16, 255); b.p.cv_min = 0; b.p.cv_max = 3000;
+  b.p.xop = XOP_AND; b.p.xsrc = 2;
+  int mismatch = 0, highs = 0;
+  for (uint32_t t = 0; t < 512; t++) {
+    drive(1);
+    if (t < 256) continue;
+    if ((a.out_mv > 0) != (b.out_mv > 0)) mismatch++;
+    if (b.out_mv > 0) highs++;
+  }
+  CHECK(mismatch == 0);
+  CHECK(highs > 0);
+
+  channels_init(DEFAULT_RATIO);
+  setup_pulse(b, 16, 255); b.p.cv_min = 0; b.p.cv_max = 3000;
+  setup_pulse(a, 16, 255); a.p.cv_min = 0; a.p.cv_max = 3000;
+  b.p.xop = XOP_XOR; b.p.xsrc = 2;
+  highs = 0;
+  for (uint32_t t = 0; t < 512; t++) {
+    drive(1);
+    if (t >= 256 && b.out_mv > 0) highs++;
+  }
+  CHECK(highs == 0);           // both gates are high together -> XOR is low
+
+  channels_init(DEFAULT_RATIO);
+  setup_pulse(a, 16, 255); a.p.cv_min = 0; a.p.cv_max = 3000;
+  setup_pulse(b, 16, 1);   b.p.cv_min = 0; b.p.cv_max = 3000;
+  b.p.xop = XOP_OR; b.p.xsrc = 2;
+  highs = 0;
+  for (uint32_t t = 0; t < 512; t++) {
+    drive(1);
+    if (t >= 256 && b.out_mv > 0) highs++;
+  }
+  CHECK(highs > 200);          // source high keeps OR high even when own gate is low
+
+  channels_init(DEFAULT_RATIO);
+  Channel &s = channels[0], &h = channels[1];
+  setup_pulse(s, 16, 64); s.p.cv_min = 0; s.p.cv_max = 10000;
+  h.p.mode = MODE_LFO; h.p.ratio = 16; h.p.wave = LFO_SAW;
+  h.p.cv_min = 0; h.p.cv_max = 10000; h.p.slew = 0;
+  h.p.xop = XOP_HOLD; h.p.xsrc = 2;
+  channels_reset();
+  int high_ticks = 0, low_ticks = 0, moved_high = 0, moved_low = 0;
+  uint16_t prev = h.out_mv;
+  for (uint32_t t = 0; t < 512; t++) {
+    drive(1);
+    if (t < 256) { prev = h.out_mv; continue; }
+    const bool same = h.out_mv == prev;
+    if (s.gate_state) {
+      high_ticks++;
+      if (!same) moved_high++;
+    } else {
+      low_ticks++;
+      if (!same) moved_low++;
+    }
+    prev = h.out_mv;
+  }
+  CHECK(high_ticks > 0);
+  CHECK(moved_high == 0);          // frozen while the source is high
+  CHECK(moved_low == low_ticks);   // free-running while the source is low
+  suite_ok("bug: cross-op hold polarity / gate thresholds");
+}
+
+// Bug 13: a user scale whose lowest note is above position 0 made MODE_NOTE
+// emit note 0, which is off-scale, for the first part of every ramp.
+static void test_bug_note_scale_bottom() {
+  const uint16_t saved = USER_SCALES[0];
+  USER_SCALES[0] = 0x800;               // only semitone 11
+  channels_init(DEFAULT_RATIO);
+  Channel &c = channels[0];
+  c.p.mode = MODE_NOTE; c.p.ratio = 16;
+  c.p.scale = SCALE_COUNT - USER_SCALE_COUNT;   // first user slot
+  c.p.cv_min = 0; c.p.cv_max = 2490; c.p.slew = 0;
+  channels_reset();
+  bool off_scale = false;
+  int seen11 = 0;
+  for (uint32_t t = 0; t < 256; t++) {
+    drive(1);
+    int k = grid_semi(c.out_mv);
+    if (k < 0 || !((0x800 >> (k % 12)) & 1)) off_scale = true;
+    if (k >= 0 && (k % 12) == 11) seen11++;
+  }
+  CHECK(!off_scale);
+  CHECK(seen11 > 0);
+  USER_SCALES[0] = saved;
+  suite_ok("bug: note quantiser bottom of sparse scale");
+}
+
+// Bug 14: the external-clock timeout did `(int32_t)(avg * 4.0f)`. With a very
+// slow clock avg*4 exceeds INT32_MAX, so the cast is undefined behaviour.
+static void test_bug_clock_large_gap() {
+  ext_clock_start(1);
+  for (int i = 0; i < 5; i++) {
+    mock_time_us += 600000000u;          // 600 s between edges, avg*4 > INT32_MAX
+    masterClock.pulse_external();
+  }
+  masterClock.tick();                    // consume the five pulses
+  masterClock.tick();                    // now evaluate the timeout gap
+  CHECK(masterClock.measured_period_us() == 600000000u);
+  masterClock = MasterClock{};
+  mock_time_us = 1000000;
+  suite_ok("bug: large external clock timeout");
+}
+
 int main() {
   test_euclid();
   test_clock();
@@ -1862,6 +1976,9 @@ int main() {
   test_bug_lag_time_constant();
   test_bug_ratchet_delay();
   test_bug_off_phase_wrap();
+  test_bug_crossop_gate_levels();
+  test_bug_note_scale_bottom();
+  test_bug_clock_large_gap();
   printf("%d checks, %d failures\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

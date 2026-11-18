@@ -25,7 +25,7 @@ const uint8_t* mode_groups(uint8_t mode) {
   static const uint8_t off[]   = { G_SHAPE, G_END };
   static const uint8_t pul[]   = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
   static const uint8_t lfo[]   = { G_SHAPE, G_CLOCK, G_RANGE, G_XOP, G_MOD, G_END };
-  static const uint8_t ramp[]  = { G_SHAPE, G_CLOCK, G_RANGE, G_XOP, G_END };
+  static const uint8_t ramp[]  = { G_SHAPE, G_CLOCK, G_RANGE, G_XOP, G_MOD, G_END };
   static const uint8_t step[]  = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
   static const uint8_t sh[]    = { G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
   static const uint8_t note[]  = { G_SHAPE, G_CLOCK, G_EUCLID, G_FLEX, G_XOP, G_RANGE, G_MOD, G_END };
